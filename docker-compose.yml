@@ -1,0 +1,26 @@
+services:
+  alpr-id:
+    build:
+      context: .
+      args:
+        ALPR_EXTRA: cpu          # gpu installs ONNX Runtime with CUDA 12 (see the block below)
+    env_file: .env               # camera URLs with credentials
+    environment:
+      ALPR_HOST: 0.0.0.0
+      ALPR_PORT: "5000"
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./config:/app/config:ro
+      - ./models:/app/models:ro
+      - ./data:/app/data         # event database, crops, snapshots, logs
+    restart: unless-stopped
+    # GPU: needs a Linux host or WSL2 with the NVIDIA Container Toolkit. Build with
+    # ALPR_EXTRA: gpu and uncomment:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]

@@ -1,0 +1,84 @@
+[project]
+name = "alpr-id"
+version = "0.4.2"
+description = "Pembaca plat nomor kendaraan Indonesia dari stream CCTV (RTSP) dengan REST API"
+readme = "README.md"
+authors = [
+    { name = "TomyLingga", email = "tomy.troller@gmail.com" }
+]
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    # Capture: RTSP reader (bundles its own FFmpeg; 19.x needs Python >= 3.12)
+    "av>=19.0.2,<20",
+    # OCR wrapper around ONNX Runtime; the ONNX Runtime build comes from an extra below
+    "fast-plate-ocr>=1.1.0,<1.2",
+    # Tracking: ByteTrackTracker (Apache-2.0), fed with our own ONNX Runtime detections
+    "trackers>=2.7.0,<3",
+    "supervision>=0.31.7,<0.32",
+    "numpy>=2.0",
+    # API (native SSE in fastapi.sse needs >= 0.135)
+    "fastapi>=0.162.5,<1",
+    "uvicorn>=0.54.0",
+    "python-multipart>=0.0.33",
+    # Config and logging
+    "pydantic>=2.9",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "structlog>=24.4",
+    # zoneinfo has no timezone database of its own on Windows
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+# Exactly one ONNX Runtime build per environment: `uv sync --extra cpu` or `uv sync --extra gpu`.
+cpu = ["onnxruntime>=1.31.1"]
+# For the GTX 1060 (Pascal, compute capability 6.1). Do not raise these pins:
+# onnxruntime-gpu >= 1.27 on PyPI is built for CUDA 13 and cuDNN >= 9.11 dropped Pascal.
+# The [cuda,cudnn] extras bring the CUDA 12 DLLs from pip, so no system CUDA install is needed.
+gpu = [
+    "onnxruntime-gpu[cuda,cudnn]==1.26.0",
+    "nvidia-cudnn-cu12==9.10.2.21",
+]
+
+[project.scripts]
+alpr-id = "alpr_id:main"
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.16",  # needed by fastapi.testclient
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.4,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+# fast-plate-ocr asks for opencv-python-headless while trackers/supervision ask for
+# opencv-python. Both ship the same `cv2` package, so keep only opencv-python.
+override-dependencies = [
+    "opencv-python-headless ; sys_platform == 'never'",
+]
+conflicts = [
+    [{ extra = "cpu" }, { extra = "gpu" }],
+]
+# Every locked version must have a wheel for these platforms. Without this, uv picked a
+# CUDA library release that only ships Linux wheels and the gpu extra failed on Windows.
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py312"
+
+[tool.ruff.lint]
+ignore = [
+    "RUF046",  # int(round(x)) is kept: x is often a numpy scalar
+    "SIM905",  # the region code table reads better as a split string
+]

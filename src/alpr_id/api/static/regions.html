@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kode wilayah · ALPR-ID</title>
+  <script src="/ui/static/theme.js"></script>
+  <link rel="stylesheet" href="/ui/static/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Langsung ke isi</a>
+
+  <header class="topbar">
+    <a class="brand" href="/ui"><span data-icon="scan"></span><span>ALPR-ID</span></a>
+    <nav class="nav" aria-label="Halaman">
+      <a href="/ui"><span data-icon="dashboard"></span>Pemantauan</a>
+      <a href="/ui/cameras"><span data-icon="video"></span>Kamera</a>
+      <a href="/ui/regions" aria-current="page"><span data-icon="mapPin"></span>Kode wilayah</a>
+    </nav>
+    <div class="topbar-end">
+      <span class="service-chip" id="service-chip"></span>
+      <button type="button" class="icon-btn" id="theme-toggle" aria-label="Ganti tampilan"></button>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="page-head">
+      <div>
+        <h1>Kode wilayah</h1>
+        <p class="muted">Kode huruf di depan nomor plat yang diterima sebagai kode sah.</p>
+      </div>
+    </div>
+
+    <div class="stack">
+      <details class="card explain">
+        <summary><h2>Cara daftar ini dipakai</h2></summary>
+        <div class="section-body stack prose">
+          <p>Bila kode yang terbaca tidak ada di daftar, misalnya <span class="mono">BF 8418 FD</span>, service menggantinya dengan kode di daftar yang paling didukung bacaan OCR pada huruf itu. Kode yang sering terbaca di lokasi ini mendapat bobot lebih. Nomor dan seri huruf di belakangnya tidak diubah.</p>
+          <p>Pembacaan yang kodenya diganti diberi tanda "Kode wilayah dikoreksi", dan bacaan aslinya tetap tersimpan sebagai bacaan mentah. Kode yang salah terbaca menjadi kode lain yang juga ada di daftar tidak bisa dikenali dengan cara ini.</p>
+          <p>Kode <span class="mono">CD</span>, <span class="mono">CC</span>, <span class="mono">CH</span>, dan <span class="mono">RI</span> (korps diplomatik, konsulat, pejabat negara) selalu diterima dan tidak tampil di daftar.</p>
+        </div>
+      </details>
+
+      <section class="card" aria-labelledby="h-auth">
+        <div class="section-head">
+          <h2 id="h-auth">Token admin</h2>
+          <span class="status" id="auth-status" data-state="idle"><span class="status-dot" aria-hidden="true"></span><span id="auth-status-text">Memeriksa…</span></span>
+        </div>
+        <div class="section-body stack">
+          <p id="auth-explain" class="muted" role="status"></p>
+          <form id="auth-form" class="auth-row" novalidate>
+            <div class="field">
+              <label for="token">Token admin</label>
+              <div class="input-group">
+                <input id="token" type="password" autocomplete="current-password" spellcheck="false" aria-describedby="token-help token-error">
+                <button type="button" class="icon-btn" data-reveal="token" aria-label="Tampilkan token" aria-pressed="false"></button>
+              </div>
+              <p class="help" id="token-help">Nilai <span class="mono">ALPR_ADMIN_TOKEN</span> di berkas <span class="mono">.env</span> pada PC service.</p>
+              <p class="error" id="token-error" hidden></p>
+            </div>
+            <div class="auth-actions">
+              <label class="check"><input type="checkbox" id="token-remember"> Ingat di browser ini</label>
+              <button type="submit" class="btn primary" id="auth-submit">Pakai token</button>
+            </div>
+          </form>
+          <div id="auth-done" hidden>
+            <button type="button" class="btn" id="auth-forget">Lupakan token di browser ini</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-add">
+        <div class="section-head">
+          <h2 id="h-add">Tambah kode</h2>
+          <p class="muted">Isian bertanda <span class="req" aria-hidden="true">*</span> wajib diisi.</p>
+        </div>
+        <form id="region-form" class="section-body" novalidate>
+          <div class="banner" id="form-alert" role="alert" data-kind="error" hidden>
+            <span data-icon="alert"></span>
+            <p id="form-alert-text"></p>
+          </div>
+          <div class="add-row">
+            <div class="field field-code">
+              <label for="f-code">Kode <span class="req" aria-hidden="true">*</span></label>
+              <input id="f-code" type="text" required maxlength="2" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="BK" aria-describedby="f-code-help f-code-error">
+              <p class="help" id="f-code-help">Satu atau dua huruf.</p>
+              <p class="error" id="f-code-error" hidden></p>
+            </div>
+            <div class="field field-name">
+              <label for="f-name">Wilayah</label>
+              <input id="f-name" type="text" maxlength="120" autocomplete="off" placeholder="Sumatera Utara (Medan dan pesisir timur)" aria-describedby="f-name-help">
+              <p class="help" id="f-name-help">Keterangan untuk daftar ini saja; tidak memengaruhi pembacaan.</p>
+            </div>
+            <div class="add-action">
+              <button type="submit" class="btn primary" id="add-button"><span data-icon="plus"></span>Tambah kode</button>
+            </div>
+          </div>
+          <p class="help" id="form-locked" hidden>Masukkan token admin di atas untuk menambah atau menghapus kode.</p>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="h-list">
+        <div class="section-head">
+          <div>
+            <h2 id="h-list">Daftar kode</h2>
+            <p class="muted" id="list-count" role="status"></p>
+          </div>
+          <div class="toolbar">
+            <label for="filter" class="sr-only">Cari kode atau wilayah</label>
+            <input id="filter" type="text" autocomplete="off" spellcheck="false" placeholder="Cari kode atau wilayah" class="filter-input">
+            <button type="button" class="btn small" id="restore-button">Pulihkan kode bawaan</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="compact">
+            <thead>
+              <tr>
+                <th scope="col">Kode</th>
+                <th scope="col">Wilayah</th>
+                <th scope="col">Asal</th>
+                <th scope="col">Terbaca di sini</th>
+                <th scope="col">Tindakan</th>
+              </tr>
+            </thead>
+            <tbody id="region-rows"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="list-empty" hidden></p>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="confirm-dialog" class="narrow" aria-labelledby="confirm-title">
+    <div class="dialog-head">
+      <h2 id="confirm-title">Hapus kode</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Tutup"><span data-icon="x"></span></button>
+    </div>
+    <div class="dialog-body">
+      <p id="confirm-text"></p>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close autofocus>Batal</button>
+      <button type="button" class="btn danger" id="confirm-yes"><span data-icon="trash"></span><span id="confirm-yes-label">Hapus kode</span></button>
+    </div>
+  </dialog>
+
+  <script type="module" src="/ui/static/regions.js"></script>
+</body>
+</html>

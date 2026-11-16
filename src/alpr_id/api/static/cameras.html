@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kamera · ALPR-ID</title>
+  <script src="/ui/static/theme.js"></script>
+  <link rel="stylesheet" href="/ui/static/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Langsung ke isi</a>
+
+  <header class="topbar">
+    <a class="brand" href="/ui"><span data-icon="scan"></span><span>ALPR-ID</span></a>
+    <nav class="nav" aria-label="Halaman">
+      <a href="/ui"><span data-icon="dashboard"></span>Pemantauan</a>
+      <a href="/ui/cameras" aria-current="page"><span data-icon="video"></span>Kamera</a>
+      <a href="/ui/regions"><span data-icon="mapPin"></span>Kode wilayah</a>
+    </nav>
+    <div class="topbar-end">
+      <span class="service-chip" id="service-chip"></span>
+      <button type="button" class="icon-btn" id="theme-toggle" aria-label="Ganti tampilan"></button>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="page-head">
+      <div>
+        <h1>Kamera</h1>
+        <p class="muted">Tambah kamera, uji sambungannya, dan tentukan area gambar yang dibaca.</p>
+      </div>
+    </div>
+
+    <div class="stack">
+      <section class="card" aria-labelledby="h-auth">
+        <div class="section-head">
+          <h2 id="h-auth">Token admin</h2>
+          <span class="status" id="auth-status" data-state="idle"><span class="status-dot" aria-hidden="true"></span><span id="auth-status-text">Memeriksa…</span></span>
+        </div>
+        <div class="section-body stack">
+          <p id="auth-explain" class="muted" role="status"></p>
+          <form id="auth-form" class="auth-row" novalidate>
+            <div class="field">
+              <label for="token">Token admin</label>
+              <div class="input-group">
+                <input id="token" type="password" autocomplete="current-password" spellcheck="false" aria-describedby="token-help token-error">
+                <button type="button" class="icon-btn" data-reveal="token" aria-label="Tampilkan token" aria-pressed="false"></button>
+              </div>
+              <p class="help" id="token-help">Nilai <span class="mono">ALPR_ADMIN_TOKEN</span> di berkas <span class="mono">.env</span> pada PC service.</p>
+              <p class="error" id="token-error" hidden></p>
+            </div>
+            <div class="auth-actions">
+              <label class="check"><input type="checkbox" id="token-remember"> Ingat di browser ini</label>
+              <button type="submit" class="btn primary" id="auth-submit">Pakai token</button>
+            </div>
+          </form>
+          <div id="auth-done" hidden>
+            <button type="button" class="btn" id="auth-forget">Lupakan token di browser ini</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-list">
+        <div class="section-head">
+          <h2 id="h-list">Daftar kamera</h2>
+          <p class="muted" id="list-count"></p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Kamera</th>
+                <th scope="col">Sumber</th>
+                <th scope="col">Alamat stream</th>
+                <th scope="col">Rute lama</th>
+                <th scope="col">Diproses</th>
+                <th scope="col">Status</th>
+                <th scope="col">Tindakan</th>
+              </tr>
+            </thead>
+            <tbody id="camera-rows"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="list-empty" hidden>Belum ada kamera. Isi formulir di bawah untuk menambah yang pertama.</p>
+      </section>
+
+      <section class="card" aria-labelledby="h-form">
+        <div class="section-head">
+          <h2 id="h-form">Tambah kamera</h2>
+          <p class="muted">Isian bertanda <span class="req" aria-hidden="true">*</span> wajib diisi.</p>
+        </div>
+        <form id="camera-form" class="section-body" novalidate>
+          <div class="banner" id="form-alert" role="alert" data-kind="error" hidden>
+            <span data-icon="alert"></span>
+            <p id="form-alert-text"></p>
+          </div>
+          <div class="form-grid">
+            <div class="form-col">
+              <div class="grid-2">
+                <div class="field">
+                  <label for="f-id">ID kamera <span class="req" aria-hidden="true">*</span></label>
+                  <input id="f-id" type="text" required maxlength="32" autocomplete="off" spellcheck="false" placeholder="cam-5" aria-describedby="f-id-help f-id-error">
+                  <p class="help" id="f-id-help">Huruf, angka, tanda hubung atau garis bawah. Dipakai di alamat API dan nama folder gambar, dan tidak bisa diganti setelah disimpan.</p>
+                  <p class="error" id="f-id-error" hidden></p>
+                </div>
+                <div class="field">
+                  <label for="f-description">Keterangan</label>
+                  <input id="f-description" type="text" maxlength="120" autocomplete="off" placeholder="Timbangan 3 masuk" aria-describedby="f-description-error">
+                  <p class="error" id="f-description-error" hidden></p>
+                </div>
+              </div>
+
+              <fieldset class="group">
+                <legend class="legend">Alamat stream RTSP <span class="req" aria-hidden="true">*</span></legend>
+                <p class="help" id="url-keep" hidden></p>
+                <div class="segmented" role="radiogroup" aria-label="Cara mengisi alamat">
+                  <label class="check"><input type="radio" name="url-mode" value="parts" checked> Isi per bagian</label>
+                  <label class="check"><input type="radio" name="url-mode" value="full"> Tempel alamat lengkap</label>
+                </div>
+
+                <div id="url-parts" class="stack">
+                  <div class="grid-2">
+                    <div class="field">
+                      <label for="f-host">Alamat IP kamera</label>
+                      <input id="f-host" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="192.168.1.210" aria-describedby="f-host-error">
+                      <p class="error" id="f-host-error" hidden></p>
+                    </div>
+                    <div class="field">
+                      <label for="f-port">Port</label>
+                      <input id="f-port" type="number" min="1" max="65535" value="554" inputmode="numeric" aria-describedby="f-port-error">
+                      <p class="error" id="f-port-error" hidden></p>
+                    </div>
+                  </div>
+                  <div class="grid-2">
+                    <div class="field">
+                      <label for="f-user">Nama pengguna kamera</label>
+                      <input id="f-user" type="text" autocomplete="off" spellcheck="false" autocapitalize="none">
+                    </div>
+                    <div class="field">
+                      <label for="f-password">Sandi kamera</label>
+                      <div class="input-group">
+                        <input id="f-password" type="password" autocomplete="new-password" spellcheck="false">
+                        <button type="button" class="icon-btn" data-reveal="f-password" aria-label="Tampilkan sandi" aria-pressed="false"></button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label for="f-path">Jalur stream</label>
+                    <input id="f-path" type="text" autocomplete="off" spellcheck="false" value="/Streaming/Channels/101" aria-describedby="f-path-help">
+                    <p class="help" id="f-path-help">Kamera Hikvision: <span class="mono">/Streaming/Channels/101</span> untuk stream utama, <span class="mono">102</span> untuk sub stream. Merek lain memakai jalur berbeda.</p>
+                  </div>
+                </div>
+
+                <div id="url-full" class="field" hidden>
+                  <label for="f-url">Alamat lengkap</label>
+                  <div class="input-group">
+                    <input id="f-url" type="password" autocomplete="off" spellcheck="false" placeholder="rtsp://pengguna:sandi@192.168.1.210:554/Streaming/Channels/101" aria-describedby="f-url-help f-url-error">
+                    <button type="button" class="icon-btn" data-reveal="f-url" aria-label="Tampilkan alamat" aria-pressed="false"></button>
+                  </div>
+                  <p class="help" id="f-url-help">Harus diawali <span class="mono">rtsp://</span>. Karakter khusus di dalam sandi, seperti <span class="mono">@</span> atau <span class="mono">:</span>, ditulis dalam bentuk persen (<span class="mono">%40</span>, <span class="mono">%3A</span>).</p>
+                  <p class="error" id="f-url-error" hidden></p>
+                </div>
+              </fieldset>
+
+              <div class="grid-2">
+                <div class="field">
+                  <label for="f-fps">Frame diproses per detik <span class="req" aria-hidden="true">*</span></label>
+                  <input id="f-fps" type="number" min="1" max="15" step="1" value="8" inputmode="numeric" aria-describedby="f-fps-help f-fps-error">
+                  <p class="help" id="f-fps-help">Antara 1 dan 15. Semua kamera memakai GPU yang sama, jadi tiap kamera baru menambah bebannya.</p>
+                  <p class="error" id="f-fps-error" hidden></p>
+                </div>
+                <div class="field">
+                  <label for="f-legacy">Nomor rute lama</label>
+                  <input id="f-legacy" type="number" min="1" max="999" step="1" inputmode="numeric" aria-describedby="f-legacy-help f-legacy-error">
+                  <p class="help" id="f-legacy-help">Angka <span class="mono">n</span> untuk <span class="mono">/plate/n</span> dan <span class="mono">/video/n</span> yang dipakai aplikasi timbangan. Kosongkan bila tidak perlu.</p>
+                  <p class="error" id="f-legacy-error" hidden></p>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-col">
+              <fieldset class="stack">
+                <legend class="legend">Area baca</legend>
+                <p class="help">Plat hanya dicari di dalam area ini. Persempit ke jalur kendaraan supaya plat tampak lebih besar bagi detektor. Tarik kotak di gambar, atau isi angkanya dalam persen dari tepi kiri dan tepi atas gambar.</p>
+                <div class="roi-empty" id="roi-empty">
+                  <p>Gambar kamera muncul di sini setelah uji sambungan berhasil.</p>
+                </div>
+                <div class="roi-stage" id="roi-stage" hidden>
+                  <img id="roi-img" alt="Gambar kamera untuk menentukan area baca">
+                  <div class="roi-box" id="roi-box"></div>
+                </div>
+                <div class="grid-4">
+                  <div class="field">
+                    <label for="f-roi-left">Kiri (%)</label>
+                    <input id="f-roi-left" type="number" min="0" max="100" step="1" value="0" inputmode="numeric">
+                  </div>
+                  <div class="field">
+                    <label for="f-roi-top">Atas (%)</label>
+                    <input id="f-roi-top" type="number" min="0" max="100" step="1" value="0" inputmode="numeric">
+                  </div>
+                  <div class="field">
+                    <label for="f-roi-right">Kanan (%)</label>
+                    <input id="f-roi-right" type="number" min="0" max="100" step="1" value="100" inputmode="numeric">
+                  </div>
+                  <div class="field">
+                    <label for="f-roi-bottom">Bawah (%)</label>
+                    <input id="f-roi-bottom" type="number" min="0" max="100" step="1" value="100" inputmode="numeric">
+                  </div>
+                </div>
+                <p class="error" id="f-roi-error" hidden></p>
+                <div>
+                  <button type="button" class="btn small" id="roi-reset">Pakai seluruh gambar</button>
+                </div>
+              </fieldset>
+
+              <div class="banner" id="test-result" role="status" hidden>
+                <span id="test-icon"></span>
+                <p id="test-text"></p>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="button" class="btn" id="test-button"><span data-icon="activity"></span>Uji sambungan</button>
+            <button type="submit" class="btn primary" id="save-button"><span data-icon="check"></span><span id="save-label">Simpan kamera</span></button>
+            <button type="button" class="btn" id="cancel-edit" hidden>Batal mengubah</button>
+          </div>
+          <p class="help" id="form-locked" hidden>Masukkan token admin di bagian atas halaman untuk menguji atau menyimpan kamera.</p>
+        </form>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="confirm-dialog" class="narrow" aria-labelledby="confirm-title">
+    <div class="dialog-head">
+      <h2 id="confirm-title">Hapus kamera</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Tutup"><span data-icon="x"></span></button>
+    </div>
+    <div class="dialog-body">
+      <p id="confirm-text"></p>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close autofocus>Batal</button>
+      <button type="button" class="btn danger" id="confirm-yes"><span data-icon="trash"></span>Hapus kamera</button>
+    </div>
+  </dialog>
+
+  <script type="module" src="/ui/static/cameras.js"></script>
+</body>
+</html>

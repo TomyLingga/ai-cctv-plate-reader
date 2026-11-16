@@ -1,0 +1,38 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.venv-*
+training/.venv
+
+# Secrets and local config (camera credentials live in .env only)
+.env
+config/app.yaml
+
+# Runtime data: event database, plate crops, snapshots
+data/*
+!data/.gitkeep
+
+# Model weights and exported engines
+models/*
+!models/.gitkeep
+*.pt
+*.onnx
+*.engine
+*.keras
+
+# Training outputs
+runs/
+training/**/runs/
+training/**/outputs/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

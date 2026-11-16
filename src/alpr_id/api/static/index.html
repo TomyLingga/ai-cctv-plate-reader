@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pemantauan · ALPR-ID</title>
+  <script src="/ui/static/theme.js"></script>
+  <link rel="stylesheet" href="/ui/static/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Langsung ke isi</a>
+
+  <header class="topbar">
+    <a class="brand" href="/ui"><span data-icon="scan"></span><span>ALPR-ID</span></a>
+    <nav class="nav" aria-label="Halaman">
+      <a href="/ui" aria-current="page"><span data-icon="dashboard"></span>Pemantauan</a>
+      <a href="/ui/cameras"><span data-icon="video"></span>Kamera</a>
+      <a href="/ui/regions"><span data-icon="mapPin"></span>Kode wilayah</a>
+    </nav>
+    <div class="topbar-end">
+      <span class="service-chip" id="service-chip"></span>
+      <button type="button" class="icon-btn" id="theme-toggle" aria-label="Ganti tampilan"></button>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="page-head">
+      <div>
+        <h1>Pemantauan</h1>
+        <p class="muted" id="summary">Memuat data kamera…</p>
+      </div>
+      <div class="toolbar">
+        <span class="live" id="live" role="status" data-state="idle"><span class="status-dot" aria-hidden="true"></span><span id="live-text">Menyambung…</span></span>
+        <label for="refresh">Gambar kamera</label>
+        <select id="refresh">
+          <option value="1000">diperbarui tiap 1 detik</option>
+          <option value="2000">diperbarui tiap 2 detik</option>
+          <option value="5000">diperbarui tiap 5 detik</option>
+          <option value="0">dijeda</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="banner" id="alert" data-kind="error" role="alert" hidden>
+      <span data-icon="alert"></span>
+      <p id="alert-text"></p>
+    </div>
+
+    <div class="layout">
+      <section aria-labelledby="h-cameras">
+        <h2 class="sr-only" id="h-cameras">Kamera</h2>
+        <div class="camera-grid" id="camera-grid">
+          <div class="skeleton"></div>
+          <div class="skeleton"></div>
+        </div>
+        <div class="card empty" id="no-cameras" hidden>
+          <p>Belum ada kamera yang berjalan.</p>
+          <p><a href="/ui/cameras">Tambah kamera</a></p>
+        </div>
+      </section>
+
+      <aside class="card feed" aria-labelledby="h-feed">
+        <div class="feed-head">
+          <h2 id="h-feed">Pembacaan terbaru</h2>
+          <select id="feed-filter" aria-label="Saring pembacaan menurut kamera">
+            <option value="">Semua kamera</option>
+          </select>
+        </div>
+        <div class="feed-body">
+          <ol class="read-list" id="feed-list"></ol>
+          <p class="empty" id="feed-empty" hidden>Belum ada pembacaan.</p>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <template id="tpl-camera">
+    <article class="card camera">
+      <header class="camera-head">
+        <div class="camera-title">
+          <h3 class="camera-id"></h3>
+          <p class="camera-desc muted"></p>
+        </div>
+        <span class="status" data-state="idle"><span class="status-dot" aria-hidden="true"></span><span class="status-text"></span></span>
+      </header>
+      <button type="button" class="camera-view">
+        <img alt="" width="640" height="360">
+        <span class="camera-note" hidden></span>
+      </button>
+      <div class="reading">
+        <p class="label">Plat yang terlihat sekarang</p>
+        <div class="reading-row" aria-live="polite">
+          <p class="plate" data-empty="true">Tidak ada kendaraan</p>
+          <p class="reading-meta"></p>
+        </div>
+        <div class="flags"></div>
+      </div>
+      <dl class="metrics">
+        <div><dt>Kamera (fps)</dt><dd data-metric="fps">–</dd></div>
+        <div><dt>Diproses (fps)</dt><dd data-metric="processed">–</dd></div>
+        <div><dt>Proses (ms)</dt><dd data-metric="latency">–</dd></div>
+        <div><dt>Tertinggal (ms)</dt><dd data-metric="lag">–</dd></div>
+      </dl>
+      <div class="recent">
+        <p class="label">Terakhir terbaca</p>
+        <ol class="read-list"></ol>
+        <p class="muted recent-empty">Belum ada pembacaan dari kamera ini.</p>
+      </div>
+    </article>
+  </template>
+
+  <dialog id="event-dialog" aria-labelledby="event-title">
+    <div class="dialog-head">
+      <h2 id="event-title">Pembacaan</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Tutup"><span data-icon="x"></span></button>
+    </div>
+    <div class="dialog-body">
+      <div class="event-top">
+        <p class="plate" id="event-plate"></p>
+        <img class="crop-large" id="event-crop" alt="Potongan gambar plat">
+        <div class="flags" id="event-flags"></div>
+      </div>
+      <div class="frame zoomable" id="event-frame">
+        <img id="event-snapshot" alt="Gambar kamera saat plat dibaca">
+        <button type="button" class="btn small zoom-reset" id="event-zoom-reset" hidden>Tampilan penuh</button>
+      </div>
+      <p class="muted zoom-hint" id="event-zoom-hint">Seret di gambar untuk memperbesar bagian itu. Klik dua kali untuk kembali ke tampilan penuh.</p>
+      <dl class="facts" id="event-facts"></dl>
+    </div>
+  </dialog>
+
+  <dialog id="camera-dialog" aria-labelledby="camera-dialog-title">
+    <div class="dialog-head">
+      <h2 id="camera-dialog-title">Kamera</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Tutup"><span data-icon="x"></span></button>
+    </div>
+    <div class="dialog-body">
+      <div class="frame">
+        <img id="camera-dialog-img" alt="" width="1280" height="720">
+      </div>
+      <p class="muted" id="camera-dialog-note"></p>
+    </div>
+  </dialog>
+
+  <script type="module" src="/ui/static/dashboard.js"></script>
+</body>
+</html>

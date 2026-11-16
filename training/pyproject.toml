@@ -1,0 +1,28 @@
+[project]
+name = "alpr-id-training"
+version = "0.1.0"
+description = "Lingkungan training dan export model untuk alpr-id, terpisah dari runtime"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    # Pinned exactly: train/val/export arguments changed several times within 8.4.x.
+    "ultralytics==8.4.211",
+    "onnx>=1.17",
+    "onnxslim>=0.1.82",
+    "onnxruntime>=1.20",
+    # GPU build for the training laptop (RTX 5050 needs CUDA 12.8 or newer). The newest torch
+    # on the cu128 index on 15 November 2026. Training only: the runtime has no torch at all.
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

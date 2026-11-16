@@ -1,0 +1,150 @@
+# alpr-id
+
+Pembaca plat nomor kendaraan Indonesia dari stream RTSP empat kamera CCTV di timbangan truk. Hasilnya disajikan lewat REST API (FastAPI) dalam JSON. Proyek ini menggantikan layanan Flask lama di `../ai_cctv`.
+
+Dokumen: [audit dan rencana](docs/fase-1-audit-dan-rencana.md), [hasil Fase 2 dan benchmark](docs/fase-2-baseline-dan-benchmark.md), [dataset dan training Fase 3](docs/fase-3-dataset-dan-training.md), [fine-tune dan perbandingan Fase 4](docs/fase-4-finetune-dan-perbandingan.md).
+
+## Aturan kerja
+
+- Kerjakan per fase dan minta konfirmasi pengguna sebelum pindah fase. Fase 1 (audit, rencana, struktur) selesai. Fase 2 (runtime baseline, API, benchmark) selesai dan sudah terpasang di PC ROG; Fase 3 (pipeline dataset dan training) dimulai 15 November 2026 atas permintaan pengguna ("mulai training", "buatkan fine-tune bila perlu"); keadaannya ada di `docs/fase-3-dataset-dan-training.md`. Fase 4 (fine-tune, perbandingan dengan baseline, kecepatan) dikerjakan 15 November 2026 setelah label manusia pertama (456 crop) masuk; hasilnya di `docs/fase-4-finetune-dan-perbandingan.md`. Model OCR `models/ocr/finetuned/timbangan-20261115.onnx` (crop kita ditambah 1.879 crop Kaggle, augmentasi buram, bobot dicampur 50% dengan model hub) dibuat dengan resep yang pada evaluasi silang membaca 244 dari 280 crop, model hub 228, tanpa merusak satu kendaraan pun; kecepatannya di GTX 1060 sama. Detektor tidak diganti: YOLO26n hasil training lebih buruk di frame kamera, YOLO26s butuh 35,8 ms per frame di GTX 1060. Model OCR itu dipasang di PC ROG pada 15 November 2026 pukul 09.47 atas permintaan pengguna (`deploy/rog/set-ocr-model.ps1`); `config/app.yaml` di laptop menunjuk berkas yang sama, dan model hub `models/ocr/cct_s_v2_global.onnx` tetap ada di kedua mesin untuk kembali. Mengganti model service selalu menunggu persetujuan pengguna; perintah yang me-restart service di PC ROG tanpa persetujuan itu juga ditolak mode otomatis sesi.
+- `../ai_cctv`, `../timbangan-ocr-service`, dan `../inl_register` hanya dibaca. Jangan menulis apa pun di sana, jangan menjalankan interpreter dari venv-nya, dan jangan menjalankan perintah git di sana. `git diff` dan `git status` menulis ulang `.git/index` walaupun memakai `--no-optional-locks`.
+- Sebelum menulis kode yang memakai pustaka, pastikan nama fungsi, argumen, dan nama model dari dokumentasi atau lewat introspeksi paket yang terpasang. Bagian "Fakta pustaka" di bawah mencatat yang sudah dipastikan.
+- Prioritas pengguna (15 November 2026): yang paling diperlukan adalah hasil bacaan langsung dari stream; menurut pemahaman saya itu `GET /plate/{n}` yang dipanggil aplikasi desktop tiap detik. Karena itu dua penjaga plat tertutup (lewati crop berasio lebar:tinggi di bawah 2,3; tahan plat tanpa huruf seri atau di bawah 6 karakter) ditolak pengguna dan tidak dipasang. Jangan tawarkan lagi kecuali diminta.
+- Aturan pengguna untuk data training (15 November 2026): plat yang tertutup tidak dipakai, kecuali terbukti tidak merusak model. Label otomatis boleh untuk training; akurasi hanya dihitung pada crop berlabel manusia.
+- Jangan menulis angka akurasi yang tidak berasal dari evaluasi yang benar-benar dijalankan. Angka dari dokumentasi pihak lain harus disebut sumbernya. Sampai test set berlabel ada (Fase 3), yang boleh dilaporkan hanya latency dan contoh bacaan.
+- Kredensial kamera hanya ada di `.env` dan, untuk kamera yang ditambahkan lewat halaman `/ui/cameras`, di tabel `cameras` pada `data/alpr.sqlite3`. Tidak di kode, tidak di YAML. URL RTSP selalu di-mask sebelum dicetak, dicatat ke log, atau dikirim ke browser (`capture.probe.display_url`).
+- Jangan mencoba login ke kamera berulang kali. Kamera timbangan hanya terjangkau lewat LAN (atau hotspot dari PC yang tersambung LAN); lewat Wi-Fi kantor alamat `192.168.1.x` yang sama dijawab perangkat lain. Kamera yang benar menjawab RTSP dengan realm `IP Camera(...)`.
+- Balasan ke pengguna dalam Bahasa Indonesia. Komentar kode, nama variabel, dan pesan commit dalam Bahasa Inggris.
+- Saat mengedit file dengan PowerShell 5.1, jangan pakai `Set-Content -Encoding utf8`: itu menambahkan BOM. Pakai `[IO.File]::WriteAllText` dengan `UTF8Encoding($false)`.
+- Skrip tambalan yang memuat path Windows jangan dikirim lewat heredoc Bash: `\\` menjadi `\`, lalu Python membacanya sebagai escape (`\a`, `\f`, `\t`, `\r`) dan teksnya rusak tanpa pesan error. Tulis skripnya sebagai berkas dulu.
+
+## Lingkungan
+
+Kamera Hikvision DS-2CD1047G2H-LIU, firmware V5.8.10 (dibaca dari `/ISAPI/System/deviceInfo` pada 15 November 2026; keempatnya menolak endpoint fokus, jadi tanpa lensa motor), main stream `/Streaming/Channels/101`, 2560×1440, 20 fps (diukur 13 November 2026):
+
+| id | legacy_id | IP | Codec | Peran |
+|---|---|---|---|---|
+| cam-1 | 1 | 192.168.1.205 | H.265 | Outgoing, timbang masuk |
+| cam-2 | 2 | 192.168.1.201 | H.265 | Outgoing, timbang keluar |
+| cam-3 | 3 | 192.168.1.206 | H.264 | Incoming, timbang masuk |
+| cam-4 | 4 | 192.168.1.200 | H.265 | Incoming, timbang keluar |
+
+cam-1 dan cam-2 melihat timbangan yang sama dari dua ujung, begitu juga cam-3 dan cam-4. Pemetaan peran dikonfirmasi pengguna pada 13 November 2026. Sub stream (`102`) hanya 640×360 di tiga kamera, terlalu kecil untuk OCR. Jam kamera tertinggal hampir dua jam dari jam PC, jadi timestamp event memakai jam server.
+
+Plat truk yang berhenti di timbangan selebar kira-kira 100 sampai 115 piksel pada frame penuh; plat belakang yang lewat dekat kamera bisa 220 sampai 320 piksel.
+
+Mesin:
+- Laptop pengembangan dan training: i7-14700HX, RTX 5050 8 GB, Windows 11. Docker dan WSL belum terpasang.
+- PC inferensi (diputuskan pengguna 13 November 2026): ROG Strix GL12CP, i7-8700, 12 GB, Windows 11, GTX 1060 3 GB, IP LAN `192.168.1.37`, hostname `DESKTOP-7GTPA2O`, nama di Tailscale `ikn-demo` (`100.119.227.41`). alpr-id dipasang di `C:\alpr-id` (drive D di sana hampir penuh) dan melayani API baru serta rute lama di port 5000: `http://192.168.1.37:5000`. Sejak 14 November 2026 yang berjalan versi 0.4.2 dengan halaman `/ui`, `/ui/cameras`, dan `/ui/regions`; `ALPR_ADMIN_TOKEN` ada di `.env` laptop dan ikut terkirim ke `C:\alpr-id\.env` saat deploy. Berkas halaman dibaca dari disk tiap permintaan, jadi perubahan di `api/static/` cukup di-deploy tanpa restart; perubahan kode Python perlu restart task.
+- Akses ke PC inferensi hanya lewat Tailscale dengan SSH berkunci (`~\.ssh\alpr_rog_ed25519` di laptop). SSH diaktifkan sekali di sana dengan `deploy/rog/Aktifkan-akses-SSH.bat`; pemasangan dan pembaruan memakai `deploy/rog/deploy.ps1`. Dari laptop, alamat `192.168.1.x` port 554 lewat Wi-Fi kantor dibelokkan ke perangkat lain, jadi kamera hanya bisa diuji dari PC inferensi atau lewat hotspot PC ber-LAN.
+- Layanan lama berjalan di `http://192.168.1.163:5000` (HP OMEN `INLSERVERFOA`, i7-7700, Windows 10, GTX 1060 3 GB) lewat Task Scheduler, memakai torch 2.7.1+cu118 di GPU. Layanan itu tetap berjalan sampai alpr-id siap menggantikannya.
+
+Konsumen layanan lama yang masih aktif:
+- Aplikasi desktop VB.NET di PC timbangan memanggil `GET /plate/1..4` tiap detik, membaca field `plate` dan `status`, lalu membandingkan `plate` dengan `registrasi.no_polisi` secara persis (spasi ikut dihitung). Alamatnya ditulis langsung di kode desktop.
+- Web `inl_register` menampilkan `GET /video/1..4` (MJPEG) di pop-up cek plat. Alamatnya diatur lewat `CCTV_ANPR_URL` di `.env` Laravel.
+
+Pengguna meminta rute lama tetap disediakan dan akan mengompilasi ulang aplikasi desktop supaya menunjuk ke alamat baru.
+
+## Keputusan arsitektur
+
+1. **Runtime tanpa PyTorch.** Detektor dan OCR dijalankan dengan ONNX Runtime. Paket `ultralytics` dan `torch` hanya ada di lingkungan `training/`. Di GTX 1060 provider-nya `CUDAExecutionProvider` dari `onnxruntime-gpu==1.26.0`; TensorRT tidak tersedia untuk kartu Pascal. Cadangannya CPU.
+2. **Capture dengan PyAV.** Satu thread per kamera membaca terus dan hanya menyimpan frame terakhir, dengan timeout dan reconnect bertahap. Konversi ke BGR dilakukan pemakai frame, jadi frame yang dilewati tidak dikonversi.
+3. **Satu worker per kamera** mengambil frame terbaru pada `process_fps` (8). Jadwal antar-kamera digeser supaya bergiliran. Panggilan model diserialkan lewat satu lock (`runtime.serialize_inference`); kalau model sibuk, kamera melewati frame, tidak mengantre.
+4. **ROI per kamera di config**, dipotong dari frame resolusi asli. Kotak yang menyentuh tepi ROI tidak di-OCR, karena plat terpotong terbaca salah dengan confidence tinggi.
+5. **Detektor satu kelas `plat`.** Baseline: `best.pt` lama (YOLOv8n) diekspor ke ONNX dengan NMS tertanam, keluaran `(1, 300, 6)`. YOLO26n dan YOLO26s masuk di Fase 4; ekspornya memakai `nms=False` supaya keluarannya sama.
+6. **Tracking: `trackers.ByteTrackTracker`**, satu instance per kamera, diberi `timestamp` capture. Kalau tracker memberi ID baru ke plat di posisi yang sama, status kendaraan lama diteruskan (`CameraPipeline._adopt`).
+7. **OCR: arsitektur fast-plate-ocr `cct-s-v2-global-model`** dari file lokal (sejak 15 November 2026 bobot hasil fine-tune `timbangan-20261115.onnx`, dengan `plate_config` yang sama), paling banyak `max_reads_per_track` (5) bacaan per kendaraan. Dua bacaan pertama cepat; sisanya disimpan untuk crop yang 25% lebih baik dari yang sudah dibaca, atau dipakai tiap `stale_read_s` bila tidak ada yang lebih baik. Setelah event keluar, kendaraan itu tidak di-OCR lagi. Kendaraan yang tidak menghasilkan bacaan layak dibaca ulang setelah `retry_after_s`.
+8. **Crop tidak diperbaiki sebelum OCR.** Tanpa sharpening, thresholding, denoise, atau upscaling. Perbaikan citra menghapus coretan pendek di tengah huruf M dan W pada plat Indonesia sehingga terbaca H. `ocr.enhance` hanya menerima `false`.
+9. **Voting memakai distribusi probabilitas penuh per karakter**, dikelompokkan dulu menurut panjang bacaan. H, M, W adalah kelompok huruf mirip: tidak ditukar otomatis, tetapi bila selisihnya tipis event memuat bacaan lain di `alternatives`.
+10. **Koreksi berbasis posisi** hanya untuk pasangan O/0, I/1, B/8, S/5, Z/2. Penukaran hanya diterima bila hasilnya berkode wilayah yang dikenal, paling banyak seperempat karakter, dan tidak untuk bacaan di bawah lima karakter. Huruf I, O, Q di seri belakang tidak diubah. Digit masa berlaku yang menempel dibuang. Plat di luar pola dikembalikan apa adanya dengan `format_valid: false`.
+11. **Satu event per kendaraan per kamera.** Event keluar saat voting stabil (minimal 2 bacaan, confidence 0,85, tiap karakter minimal 0,6, format valid), saat jatah bacaan habis, atau saat track berakhir. Plat yang sama di kamera yang sama dalam 120 detik sejak terakhir terlihat dianggap kendaraan yang sama. Hasil dengan confidence di bawah 0,4 dibuang dan tidak ditampilkan di `/plate/{n}`. Kegagalan menyimpan event tidak menghentikan kamera.
+12. **Penyimpanan: SQLite mode WAL** dengan satu koneksi ber-lock, ditambah crop dan snapshot di `data/media/<tanggal>/<kamera>/`. Setiap crop yang di-OCR juga disimpan di subfolder `reads/` sebagai bahan dataset Fase 3.
+13. **API: FastAPI dengan SSE bawaan**, satu worker uvicorn, pipeline dijalankan di `lifespan`. Rute lama `GET /plate/{n}` dan `GET /video/{n}` aktif lewat `api.legacy_routes`.
+14. **Deployment di Windows tanpa container:** `start-alpr.bat` dan `install-autostart.ps1` (Task Scheduler). Dockerfile dan compose disediakan, belum diuji.
+15. **Test set hanya dari CCTV timbangan**, dibagi per kunjungan kendaraan dan per tanggal. Data publik hanya untuk train dan val.
+16. **`registrasi.no_polisi` di `inl_register` boleh dipakai sebagai petunjuk label** (izin pengguna 13 November 2026), dengan syarat hanya dibaca: tidak mengubah data dan tidak mengganggu operasional. Ambil lewat salinan atau query baca-saja di luar jam sibuk.
+17. **Kamera punya dua sumber.** Kamera di `config/app.yaml` (URL dari `.env`) tidak bisa diubah lewat API. Kamera yang ditambahkan lewat API disimpan di tabel `cameras` SQLite (`storage/cameras.py`) dan dijalankan `Engine` tanpa restart: `add_camera`, `update_camera`, `remove_camera`. Bila ID atau nomor rute lama bertabrakan, berkas konfigurasi yang menang dan kamera tersimpan itu tidak dijalankan. Batasnya 16 kamera (`MAX_CAMERAS`), karena semua kamera berbagi satu detektor dan satu OCR. Perubahan keterangan atau nomor rute lama tidak memutus stream; perubahan URL, area baca, atau fps membuat reader baru.
+18. **Rute yang mengubah kamera dijaga token** `ALPR_ADMIN_TOKEN` di `.env` (header `Authorization: Bearer`, minimal 8 karakter). Tanpa token di server, rute itu menolak semua permintaan (403). Rute baca, termasuk halaman pemantauan, tetap terbuka seperti rute lama. URL kamera hanya menerima `rtsp://` dan `rtsps://`, sebab PyAV juga bisa membuka berkas dan protokol lain. Uji sambungan (`POST /cameras/test`) berhenti setelah satu host menolak login 3 kali dalam 10 menit (`LoginGuard`), supaya kamera tidak mengunci akun.
+19. **Halaman browser tanpa build dan tanpa CDN:** HTML, CSS, dan modul JavaScript di `src/alpr_id/api/static/`, disajikan FastAPI di `/ui` (pemantauan), `/ui/cameras` (kelola kamera), dan `/ui/regions` (kode wilayah). Kartu token admin dipakai bersama lewat `admin.js`. Gambar kamera diambil per permintaan dari `GET /cameras/{id}/snapshot.jpg`, bukan MJPEG, supaya berhenti saat tab tidak terlihat dan tidak menahan thread server. Pembacaan baru masuk lewat `/events/stream`. Data dari service selalu ditulis dengan `textContent`.
+20. **Bacaan saat berhenti didahulukan, bacaan saat lewat hanya cadangan** (`ocr.read_when: stopped_or_passing`, keputusan pengguna 15 November 2026). Diam berarti pusat kotak plat bergeser kurang dari `still_tolerance` (12%) dari lebarnya selama `still_window_s` (0,75 detik); plat yang bergerak tidak pernah dibaca selagi masih terlihat. Jejak yang ditutup tanpa pernah diam ditahan `passing_quiet_s` (20 detik) lalu dibaca sekali dari frame terbaiknya (`_release_held`). Bacaan itu dibuang bila ada kendaraan diam di kamera yang sama setelahnya (truk yang sama baru masuk), dan jejak yang muncul dalam 20 detik setelah kendaraan diam terakhir terlihat tidak ikut (`TrackState.shadow`, truk yang sama sedang pergi). Event dari bacaan saat lewat harus berpola plat umum dan mencapai `voting.min_passing_confidence` (0,8); event menyimpan `stopped`. Sejarahnya: 0.4.0 membaca kendaraan yang lewat tanpa syarat dan pada 14 November 2026 menghasilkan 74 dari 211 event, sebagian truk yang sudah punya event lalu terbaca lagi dengan teks berbeda; 0.4.1 mematikannya; 0.4.2 menghidupkannya lagi dengan aturan di atas. Mode `stopped` dan `always` tetap ada. Angkanya di `docs/fase-2-baseline-dan-benchmark.md` bagian 3b dan 3c. Teks tanpa angka (tulisan "SATPAM" di rompi petugas) tidak pernah menjadi event (`CameraPipeline._settle`). Event tetap per kamera: pengguna menolak penggabungan cam-1 dengan cam-2 dan cam-3 dengan cam-4 (15 November 2026).
+21. **Kode wilayah di luar daftar diganti kode terdekat** (`correction.settle_region`, `postprocess.fix_unknown_region`). Daftarnya ada di tabel `region_codes` SQLite (`storage/regions.py`), berawal dari 61 kode bawaan, diubah lewat `/ui/regions`, dan dipegang satu `RegionBook` yang dipakai semua kamera. "Terdekat" dihitung dari distribusi probabilitas hasil voting pada posisi huruf kode, hanya di antara kode yang sama panjangnya, dikalikan bobot kode yang sering terbaca di lokasi (`1 + region_local_boost × porsi`, paling banyak 3×). Bobot itu dihitung dari event yang kodenya terbaca apa adanya; event hasil koreksi tidak ikut, supaya koreksi tidak menguatkan dirinya sendiri. Event bertanda `region_corrected`, `raw` menyimpan bacaan asli, dan confidence dihitung ulang. Batasnya: salah baca yang jatuh ke kode sah lain (BK terbaca BE) tidak tersentuh.
+
+## Fakta pustaka (dipastikan 13 November 2026)
+
+Dipastikan lewat paket terpasang atau dengan menjalankannya:
+- `ultralytics==8.4.211` (hanya di `training/`): argumen `nms` dan `quantize` ada; `end2end`, `half`, `int8` tidak ada lagi. `YOLO("yolo26n.pt").export(format="onnx", imgsz=640, nms=False)` menghasilkan output `[1, 300, 6]`; `nms=None` menghasilkan `[1, 84, 8400]`. Untuk `best.pt` YOLOv8, `nms=True` juga menghasilkan `[1, 300, 6]`. File `.onnx` ditulis di samping file bobot, jadi selalu ekspor dari salinan di dalam proyek ini.
+- `fast-plate-ocr==1.1.0`: `LicensePlateRecognizer(onnx_model_path=..., plate_config_path=..., providers=...)`. Atribut yang dipakai: `.model` (session ONNX Runtime), `.config`, `.plate_output_name`. `fast_plate_ocr.core.process.resize_image` dan `preprocess_image` menyiapkan input. Output `plate` berbentuk `[N, 10, 37]` berisi probabilitas. Input harus RGB uint8. Paket ini tidak memasang ONNX Runtime sendiri.
+- Detektor open-image-models (`yolo-v9-t-640-license-plates-end2end.onnx`): output `(M, 7)` berisi indeks batch, x1, y1, x2, y2, kelas, skor.
+- `trackers==2.7.0`: `ByteTrackTracker(...).update(detections: sv.Detections, frame=None, timestamp=None)`. `tracker_id` bernilai -1 sampai track terkonfirmasi (dua frame), lalu mulai dari 0 per instance. `lost_track_buffer` dihitung dalam frame video 30 fps: nilai 30 berarti 1 detik. Config proyek memakai `tracking.lost_track_s`.
+- `fastapi==0.162.5`: `from fastapi.sse import EventSourceResponse, ServerSentEvent`. `fastapi.testclient` meminta `httpx2`, bukan `httpx`.
+- `av==19.0.2`: `av.open(url, options={"rtsp_transport": "tcp"}, timeout=(buka, baca))` membaca keempat kamera. Rekam tanpa encode ulang: `target.add_stream_from_template(video)` lalu `target.mux(packet)`.
+- `time.monotonic()` di Windows dengan Python 3.12 hanya beresolusi 15,6 ms. Semua pengukuran dan penjadwalan memakai `alpr_id.timing.clock()` (`time.perf_counter`).
+- `fast-plate-ocr` bergantung pada `opencv-python-headless`, sedangkan `trackers` pada `opencv-python`. `pyproject.toml` meniadakan yang headless lewat `override-dependencies`.
+- Extra `gpu` (`onnxruntime-gpu[cuda,cudnn]==1.26.0`, `nvidia-cudnn-cu12==9.10.2.21`) terpasang dan berjalan di RTX 5050 laptop: kedua model memakai `CUDAExecutionProvider`. `[tool.uv] required-environments` wajib ada; tanpa itu uv memilih `nvidia-cublas-cu12` yang hanya punya wheel Linux. Folder `nvidia/*/bin` harus masuk PATH supaya cuDNN menemukan `nvrtc64_120_0.dll` (`detect/providers.py`).
+
+Keadaan di PC ROG sejak 13 November 2026 pukul 20.20:
+- alpr-id terpasang di `C:\alpr-id` dengan extra `gpu` dan berjalan sebagai task terjadwal `ALPR-ID` (user `DESKTOP-7GTPA2O\TOMIYASU`, S4U, mulai 30 detik setelah boot). Aturan firewall `ALPR-ID API` membuka port 5000 di semua profil, karena LAN di sana berprofil Public.
+- Terbukti di GTX 1060 (driver 581.95): detektor dan OCR memakai `CUDAExecutionProvider`, juga di dalam task tanpa login. Empat kamera pada 8 fps: total per frame median 27 sampai 51 ms, p95 45 sampai 64 ms. VRAM service sekitar 310 MiB.
+- Layanan lama di `192.168.1.163:5000` tidak disentuh dan masih berjalan. Aplikasi desktop dan `CCTV_ANPR_URL` belum diarahkan ke alamat baru.
+- Memperbarui kode di sana: `deploy\rog\deploy.ps1 -User TOMIYASU`, lalu `install-autostart.ps1 -Action Stop` dan `-Action Start` lewat SSH.
+
+Catatan PowerShell 5.1 yang ditemui saat pemasangan:
+- Di sesi SSH, `USERDOMAIN` berisi nama workgroup. Nama akun diambil dari `[Security.Principal.WindowsIdentity]::GetCurrent().Name`.
+- Cmdlet dari modul (`Register-ScheduledTask`, `New-NetFirewallRule`) tidak melihat `ErrorActionPreference` milik skrip; beri `-ErrorAction Stop` langsung.
+- Program yang menulis status ke stderr (`uv`) dianggap error saat `ErrorActionPreference` bernilai `Stop` dan stream dialihkan; nilai keluarnya yang dipakai.
+- `ssh` dari job latar belakang perlu `-n`, kalau tidak sesinya menggantung setelah perintah di seberang selesai.
+
+Batas GTX 1060 (Pascal), dari catatan rilis vendor:
+- Jangan menaikkan pin extra `gpu`. `onnxruntime-gpu` 1.27 ke atas di PyPI dibangun untuk CUDA 13 yang tidak mendukung Pascal, dan cuDNN 9.11 ke atas juga tidak.
+- TensorRT 10 ke atas, `torch` 2.15 ke atas, dan `format="engine"` tidak berjalan di kartu ini. PyTorch terakhir untuk Pascal: 2.14.1+cu126.
+- Laptop RTX 5050 butuh build PyTorch `cu128` atau lebih baru untuk training GPU, yang tidak berjalan di GTX 1060.
+- Bila `ultralytics` terpasang, set `YOLO_AUTOINSTALL=False` supaya tidak memasang ONNX Runtime GPU terbaru.
+
+Dipastikan dengan menjalankannya pada 15 November 2026:
+- Fine-tune OCR: `fast-plate-ocr train --model-config-file ... --plate-config-file ... --annotations ... --val-annotations ... --weights-path cct_s_v2_global.keras`, dengan `--epochs`, `--batch-size`, `--lr`, `--weight-decay`, `--label-smoothing`, `--no-use-ema`, `--augmentation-path`, `--early-stopping-metric`, `--seed`, `--output-dir` (pelatih membuat subfolder bernama waktu mulai; `last.keras` ditulis tiap epoch). Dataset berupa CSV berkolom `image_path`, `plate_text`, `plate_region`. TensorFlow tidak punya GPU di Windows native; backend torch di GPU laptop tidak lebih cepat dari TensorFlow di CPU, jadi torch tidak dipasang di `training/ocr`. `fast-plate-ocr export` gagal di Windows pada versi 1.1.0 (issue #103); pakai `training/ocr/export_onnx.py`.
+- `cct_s_v2_global.keras` dari hub tidak bisa dimuat utuh oleh keras 3.12.1 (`quantization_config` tidak dikenal). Yang bisa: bangun model dari run fine-tune, lalu `model.load_weights(berkas_hub, skip_mismatch=True)`. Begitulah `export_onnx.py --blend-with` mengambil bobot hub.
+- Training detektor: `YOLO(...).train(data, epochs, patience, imgsz, batch, device, workers, seed, project, name, exist_ok, cache, fliplr)` dan `model.val(data=..., split="test")` dengan metrik di `metrics.box.map`, `.map50`, `.mp`, `.mr`, dan `metrics.speed`. Lingkungan `training/` memakai torch 2.11.0+cu128 dan torchvision 0.26.0+cu128 (indeks `pytorch-cu128`), berjalan di RTX 5050.
+- Laptop 16 GB kehabisan ruang commit bila proses pemuat data Ultralytics ikut memuat CUDA ("Couldn't open shared event", atau CUDA OOM padahal VRAM kosong). `training/detector/train.py` karena itu memakai `workers=0`, `cache="ram"`, `batch=16`. Jangan menjalankan training detektor bersamaan dengan lebih dari satu training OCR.
+
+Dari riset dokumentasi, belum dicek ulang:
+- Ultralytics berlisensi AGPL-3.0. Halaman lisensinya menyebut pemakaian internal perusahaan tanpa membuka source memerlukan Enterprise License. Keputusan pengguna (13 November 2026): pakai lisensi AGPL-3.0 yang gratis.
+
+## Perintah penting
+
+```powershell
+uv sync --frozen --extra cpu                 # lingkungan runtime dengan ONNX Runtime CPU (.venv)
+uv sync --frozen --extra gpu                 # ONNX Runtime CUDA 12; tidak bisa digabung dengan cpu
+uv run --frozen --extra cpu pytest           # 225 test
+uv run --frozen --extra cpu ruff check .
+uv run --frozen --extra cpu alpr-id serve    # sama dengan start-alpr.bat
+uv run --frozen --extra cpu alpr-id benchmark --live 120
+uv run --frozen --extra cpu alpr-id benchmark data\samples\rec-20261113-b --save-crops
+uv run --frozen --extra cpu alpr-id recognize gambar.jpg
+uv run --frozen --extra cpu --env-file .env python scripts/probe_rtsp.py
+uv run --frozen --extra cpu --env-file .env python scripts/record_rtsp.py --seconds 600
+uv run --frozen --extra cpu python scripts/fetch_models.py
+uv run --project training python training/detector/export_onnx.py --weights models/detector/src/best.pt --nms true --out models/detector/plat.onnx
+uv lock                                      # setelah mengubah dependensi
+```
+
+Di laptop ini lingkungan GPU dipasang terpisah supaya `.venv` (CPU) tetap utuh. `.venv-gpu` (3,1 GB) dihapus 15 November 2026 untuk menghemat disk; `uv sync --frozen --extra gpu` dengan variabel di bawah membuatnya lagi:
+
+```powershell
+$env:UV_PROJECT_ENVIRONMENT = ".venv-gpu"; $env:UV_CACHE_DIR = "D:\uv-cache"; $env:UV_LINK_MODE = "copy"
+uv run --frozen --extra gpu alpr-id benchmark --live 120
+```
+
+Drive C laptop hampir penuh. Unduhan besar diarahkan ke `D:\uv-cache` lewat `UV_CACHE_DIR`.
+
+Menghentikan service yang berjalan di latar belakang: cari proses yang mendengarkan port 5000 (`Get-NetTCPConnection -LocalPort 5000 -State Listen`) lalu `Stop-Process`.
+
+## Struktur
+
+- `src/alpr_id/`: `capture` (reader, ROI, `probe.py` untuk uji sambungan dan masking URL), `detect` (detektor ONNX, provider), `track`, `ocr` (recognizer, mutu crop), `postprocess` (format plat, koreksi, voting, `regions.py` untuk daftar kode wilayah dan pilihan kode terdekat), `pipeline` (pipeline per kamera, engine, event), `storage` (event, media, `cameras.py`, `regions.py`), `api` (`app.py` dan halaman browser di `static/`), `bench`, `cli.py`, `config.py`, `logging_setup.py`, `timing.py`.
+- `training/`: proyek uv terpisah (`training/pyproject.toml`) untuk yang membutuhkan Ultralytics. `detector/export_onnx.py`; `dataset/build_ocr_dataset.py` (crop bacaan menjadi dataset OCR dengan pembagian tetap per plat) dan `dataset/make_review_page.py` (halaman HTML untuk memeriksa label); `ocr/evaluate.py` (akurasi plat dan karakter sebuah model ONNX pada sebuah CSV). Tiga skrip terakhir hanya memakai paket runtime dan dijalankan dengan `uv run --frozen --extra cpu python training/...` dari akar proyek. `training/ocr/` adalah proyek uv ketiga (`training/ocr/pyproject.toml`: fast-plate-ocr 1.1.0, keras 3.12.1, tensorflow 2.19.1, tf2onnx 1.16.1, tanpa coremltools) untuk fine-tune OCR di CPU: `uv run --project training/ocr fast-plate-ocr train ...` lalu `training/ocr/export_onnx.py`. `training/ocr/crossval.py` (dijalankan di lingkungan runtime, memanggil lingkungan training sendiri) mengukur fine-tune dengan evaluasi silang per plat dan menulis `progress.log`; itulah dasar keputusan selama test set tetap hanya berisi beberapa plat. Training yang lama harus dijalankan sebagai proses terpisah (`Invoke-CimMethod -ClassName Win32_Process -MethodName Create`), sebab perintah latar belakang milik sesi Claude Code ikut mati saat sesi tertutup; jendela dari proses seperti itu tidak tampil di layar, jadi progress dibaca dari `progress.log`. Jangan pakai `fast-plate-ocr export` di Windows (issue #103). CSV untuk pelatih harus berpath relatif terhadap folder CSV dan membawa kolom `plate_region`. Perintah lengkap dan hasil uji alur ada di `docs/fase-3-dataset-dan-training.md`. Tambahan Fase 4: `ocr/crossval.py --final` melatih satu model pada semua crop bersih dengan pengaturan yang sama dan `--blend-share` mencampur bobotnya dengan model hub; `ocr/cv_report.py` membandingkan model tiap kelompok per crop dan per kendaraan memakai `PlateVoter` milik service; pembanding kedua skrip itu selalu model hub (`--baseline`), sebab model akhir sudah melihat semua plat. `ocr/make_augmentation.py` menulis `ocr/augmentation-cctv.yaml`; `dataset/kaggle_recognition_csv.py` menulis CSV crop Kaggle untuk `--extra-csv`. Untuk detektor: `detector/build_dataset.py` (foto publik ditambah frame kamera yang dilabeli detektor dan OCR service), `detector/train.py` (mode `train` dan `val`), `detector/compare_runtime.py` (membandingkan berkas ONNX lewat `PlateDetector`). Model hasil training disimpan di `models/ocr/finetuned/` dan `models/detector/candidates/`.
+- `scripts/`: `probe_rtsp.py`, `record_rtsp.py`, `fetch_models.py`, `bench_onnx.py` (waktu per panggilan sebuah berkas ONNX dengan provider milik service; salinannya ada di `C:\alpr-id\scripts` di PC ROG).
+- `deploy/rog/`: `deploy.ps1`, skrip pengaktif SSH, dan `set-ocr-model.ps1` (dijalankan di PC ROG: mengganti `ocr.model_path` di `config\app.yaml` lalu me-restart task; dipakai juga untuk kembali ke model hub).
+- `tests/`: format plat, koreksi, voting, detektor, pipeline, penyimpanan, API, SSE lewat server HTTP sungguhan, kamera dinamis dan kode wilayah di engine (`test_cameras.py`), rute kelola dan halaman browser (`test_camera_api.py`), koreksi kode wilayah dan tunggu-berhenti (`test_stop_and_region.py`). Halaman browser belum punya test otomatis di sisi JavaScript; pemeriksaannya dengan membuka halaman.
+- `config/app.example.yaml`: contoh konfigurasi; setiap kunci divalidasi, kunci tak dikenal ditolak. `config/app.yaml` dan `.env` tidak masuk git.
+- `data/`: `alpr.sqlite3`, `media/`, `logs/`, `samples/` (rekaman dan frame contoh), `benchmarks/`. `models/`: bobot ONNX. Keduanya tidak masuk git.
+- `start-alpr.bat`, `install-autostart.ps1`, `Dockerfile`, `docker-compose.yml`.

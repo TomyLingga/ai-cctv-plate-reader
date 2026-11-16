@@ -1,0 +1,117 @@
+# Copy to config/app.yaml (ignored by git) and adjust.
+# Secrets never go here. Camera URLs are read from the environment variable named in `url_env`.
+# Every key is checked at startup; an unknown key is an error.
+
+timezone: Asia/Jakarta
+
+cameras:
+  # legacy_id is the camera number used by the old service (GET /plate/{n}, /video/{n}),
+  # as read by the weighbridge desktop app. Mapping confirmed by the user on 2026-11-13.
+  # roi is [x1, y1, x2, y2] as fractions of the frame. Plates outside it are not searched,
+  # and a plate cut by its border is not read, so keep it generous.
+  - id: cam-1
+    legacy_id: 1
+    description: "Outgoing, timbang masuk (192.168.1.205)"
+    url_env: ALPR_CAM_1_URL
+    roi: [0.15, 0.20, 0.85, 0.85]
+    process_fps: 8          # frames per second sent to the detector (the stream is 20 fps)
+  - id: cam-2
+    legacy_id: 2
+    description: "Outgoing, timbang keluar (192.168.1.201)"
+    url_env: ALPR_CAM_2_URL
+    roi: [0.15, 0.20, 0.85, 0.85]
+    process_fps: 8
+  - id: cam-3
+    legacy_id: 3
+    description: "Incoming, timbang masuk (192.168.1.206)"
+    url_env: ALPR_CAM_3_URL
+    roi: [0.15, 0.20, 0.85, 0.85]
+    process_fps: 8
+  - id: cam-4
+    legacy_id: 4
+    description: "Incoming, timbang keluar (192.168.1.200)"
+    url_env: ALPR_CAM_4_URL
+    roi: [0.15, 0.20, 0.85, 0.85]
+    process_fps: 8
+
+capture:
+  rtsp_transport: tcp
+  open_timeout_s: 10
+  read_timeout_s: 5
+  reconnect_backoff_s: [1, 2, 5, 10]   # pause before each reconnect attempt, the last value repeats
+  stale_after_s: 3                      # camera reported as not connected if no frame for this long
+  auth_failure_pause_s: 600             # wait this long after a rejected login; cameras lock accounts
+  max_lag_s: 2                          # reconnect when decoding runs this far behind the stream
+  hwaccel: none                         # none | d3d11va | cuda
+
+runtime:
+  # ONNX Runtime execution providers in order of preference. Providers that the installed
+  # build does not offer are skipped. TensorRT is not listed: it does not support the GTX 1060.
+  providers: [CUDAExecutionProvider, CPUExecutionProvider]
+  gpu_mem_limit_mb: 1536               # starting value for the 3 GB card
+  serialize_inference: true            # one model call at a time across all cameras
+
+detector:
+  model_path: models/detector/plat.onnx
+  conf_threshold: 0.35
+  iou_threshold: 0.5
+
+tracking:
+  lost_track_s: 4                      # how long the tracker remembers a plate it no longer sees
+  track_activation_threshold: 0.5
+  high_conf_det_threshold: 0.5
+  minimum_consecutive_frames: 2
+  track_timeout_s: 5                   # a track not seen for this long is closed
+
+ocr:
+  model_path: models/ocr/cct_s_v2_global.onnx
+  plate_config_path: models/ocr/cct_s_v2_global_plate_config.yaml
+  max_reads_per_track: 5               # OCR runs only on the best crops of a vehicle, at most this often
+  read_interval_s: 0.4                 # shortest time between two reads of one vehicle
+  read_improvement: 0.25               # after the first reads, only crops this much better are read
+  stale_read_s: 3                      # ...or the waiting crop, if nothing better came for this long
+  retry_after_s: 8                     # a vehicle with no usable result gets a new set of reads after this; 0 = never
+  read_when: stopped_or_passing        # stopped = only while the plate stands still | stopped_or_passing = plus one read for a vehicle that left without stopping | always = as soon as seen
+  passing_quiet_s: 20                  # a passing read is dropped when a standing vehicle was seen on this camera within this long before or after it
+  still_window_s: 0.75                 # standing still = for this long...
+  still_tolerance: 0.12                # ...the plate moved less than this share of its own width
+  min_plate_width_px: 60
+  crop_padding: 0.03                   # margin around the detected box, as a share of its size
+  crop_bottom_ratio: 0.0               # share of the crop height removed to drop the expiry line
+  # Crops go to the OCR model as cut from the native frame: no sharpening, thresholding,
+  # denoising or upscaling. Enhancement erases the short middle stroke of M and W on
+  # Indonesian plates and turns them into H. Only `false` is accepted.
+  enhance: false
+
+postprocess:
+  # Letters that look alike on Indonesian plates. All three are valid letters, so they are
+  # never swapped automatically. Voting adds up the full per-character probabilities across
+  # frames, and when the runner-up from the same group is within `ambiguity_margin` the event
+  # carries the other reading in `alternatives`.
+  confusable_letters:
+    - [H, M, W]
+  ambiguity_margin: 0.15
+  fix_unknown_region: true             # a region code that is not on the list (/ui/regions) is replaced by the nearest listed one
+  region_local_boost: 2.0              # extra weight for the code most often read at this site when two codes fit about equally
+
+voting:
+  min_reads: 2                         # reads needed before an event may be emitted early
+  emit_confidence: 0.85
+  min_char_confidence: 0.6             # every character must reach this for an early event
+  min_event_confidence: 0.4            # weaker results are logged and dropped
+  min_passing_confidence: 0.8          # a vehicle read only in passing needs this much and a standard plate pattern
+  dedup_window_s: 120                  # same plate on the same camera within this window is one vehicle
+
+storage:
+  database: data/alpr.sqlite3
+  media_dir: data/media
+  save_snapshot: true
+  save_reads: true                     # keep every crop that went through OCR, for the training dataset
+  retention_days: 90
+
+api:
+  legacy_routes: true                  # GET /plate/{n} and /video/{n} for the desktop and web clients
+  legacy_plate_format: spaced          # spaced = "BK 1234 ABC", compact = "BK1234ABC"
+  legacy_hold_s: 5                     # how long /plate/{n} keeps a plate after it was last seen
+  video_width: 1280
+  video_fps: 8

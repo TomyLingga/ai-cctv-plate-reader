@@ -1,0 +1,27 @@
+[project]
+name = "alpr-id-ocr-training"
+version = "0.1.0"
+description = "Fine-tuning of the plate OCR model. Kept apart from the runtime: TensorFlow is needed only here."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fast-plate-ocr==1.1.0",
+    # The members of fast-plate-ocr[train] that training and the ONNX export use, at the
+    # versions the library's own lockfile pins (v1.1.0). coremltools and ai-edge-litert are
+    # left out: they serve the CoreML and TFLite exports, and coremltools has no Windows wheel.
+    "albumentations==2.0.8",
+    "click",
+    "keras==3.12.1",
+    "matplotlib",
+    "onnx==1.17.0",
+    "onnxruntime",
+    "onnxslim==0.1.82",
+    "pandas",
+    "pydantic>=2.5.2,<3",
+    "scikit-learn",
+    "tensorboard",
+    "tensorflow==2.19.1",
+    "tf2onnx==1.16.1",
+]
+
+[tool.uv]
+package = false

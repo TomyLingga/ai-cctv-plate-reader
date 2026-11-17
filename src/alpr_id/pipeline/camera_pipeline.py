@@ -17,7 +17,7 @@ import numpy as np
 
 from alpr_id.capture.roi import PixelRect, clamp_box, roi_to_pixels
 from alpr_id.config import AppConfig, CameraConfig
-from alpr_id.detect.onnx_detector import PlateDetector
+from alpr_id.detect.onnx_detector import Detection, PlateDetector
 from alpr_id.logging_setup import get_logger
 from alpr_id.ocr.quality import crop_quality
 from alpr_id.ocr.recognizer import PlateOcr
@@ -33,10 +33,34 @@ log = get_logger(__name__)
 EDGE_MARGIN_PX = 3
 ACTIVE_WINDOW_S = 1.5
 ADOPT_MIN_IOU = 0.3
+# The focus pass costs a second detector call. With nothing in view it runs on every
+# FOCUS_IDLE_EVERY-th frame only (twice a second at 8 fps); once either pass finds a plate it
+# runs on every frame until FOCUS_ACTIVE_S after the last detection. On the GTX 1060 one
+# call takes about 15 ms, and two calls per frame for four cameras at 8 fps would fill it.
+FOCUS_IDLE_EVERY = 4
+FOCUS_ACTIVE_S = 3.0
 DROPPED = ""  # event_id of a track whose result was too weak to report
 
 EventSink = Callable[[PlateEvent, np.ndarray | None, np.ndarray | None], PlateEvent]
 ReadSink = Callable[[str, int, np.ndarray, OcrRead, float], None]
+
+
+def merge_detections(wide: list[Detection], focus: list[Detection], iou_threshold: float) -> list[Detection]:
+    """Union of the two detection passes over one frame, in frame coordinates.
+
+    Where both passes found the same plate (boxes overlapping by `iou_threshold` or more),
+    the more confident box is kept, so a plate never comes out twice.
+    """
+    merged = list(wide)
+    for extra in focus:
+        for index, kept in enumerate(merged):
+            if box_iou(kept.box, extra.box) >= iou_threshold:
+                if extra.confidence > kept.confidence:
+                    merged[index] = extra
+                break
+        else:
+            merged.append(extra)
+    return merged
 
 
 @dataclass
@@ -128,7 +152,9 @@ class CameraPipeline:
         self._tracker = CameraTracker(config.tracking, frame_rate=camera.process_fps)
         self._tracks: dict[int, TrackState] = {}
         self._recent_events: dict[str, tuple[str, float]] = {}
-        self._roi_cache: tuple[tuple[int, int], PixelRect] | None = None
+        self._roi_cache: tuple[tuple[int, int], PixelRect, PixelRect | None] | None = None
+        self._frames = 0
+        self._focus_active_until = -math.inf
         self._visible: tuple[VisiblePlate, ...] = ()
         self._last_plate: VisiblePlate | None = None
         self._standing_seen_at = -math.inf  # last time a vehicle that stood here was in view
@@ -162,24 +188,65 @@ class CameraPipeline:
 
     # -- frame processing, one thread per camera ---------------------------------------
 
-    def _roi(self, width: int, height: int) -> PixelRect:
+    def _areas(self, width: int, height: int) -> tuple[PixelRect, PixelRect | None]:
+        """The search area and, if the camera has one, the focus area, in pixels of this frame size."""
         if self._roi_cache is None or self._roi_cache[0] != (width, height):
-            self._roi_cache = ((width, height), roi_to_pixels(self.camera.roi, width, height))
-        return self._roi_cache[1]
+            focus = self.camera.focus
+            self._roi_cache = (
+                (width, height),
+                roi_to_pixels(self.camera.roi, width, height),
+                roi_to_pixels(focus, width, height) if focus is not None else None,
+            )
+        return self._roi_cache[1], self._roi_cache[2]
 
     def _inference(self):
         return self._lock if self._lock is not None else nullcontext()
 
+    def _in_focus(self, output, box, focus: PixelRect) -> list[Detection]:
+        """Detections of the focus pass in frame coordinates, without plates cut by its border.
+
+        A plate that crosses the border of the focus area gets a box around the visible part
+        only. The wide pass sees that plate whole, so the partial box is not needed, and OCR
+        would read it confidently and wrongly.
+        """
+        kept = []
+        for found in self._detector.postprocess(output, box, (focus.height, focus.width)):
+            if (
+                found.x1 <= EDGE_MARGIN_PX
+                or found.y1 <= EDGE_MARGIN_PX
+                or found.x2 >= focus.width - EDGE_MARGIN_PX
+                or found.y2 >= focus.height - EDGE_MARGIN_PX
+            ):
+                continue
+            kept.append(found.shifted(focus.x1, focus.y1))
+        return kept
+
     def process(self, frame: np.ndarray, captured_at: float, wall_time: float) -> FrameResult:
         height, width = frame.shape[:2]
-        roi = self._roi(width, height)
+        roi, focus = self._areas(width, height)
+        self._frames += 1
+        if focus is not None and captured_at > self._focus_active_until and self._frames % FOCUS_IDLE_EVERY:
+            focus = None  # nothing in view: the focus pass only looks in now and then
 
+        # Two views of the same frame: the whole search area shrunk to the detector's input,
+        # and the spot where vehicles stand at (close to) full resolution. Each finds plates
+        # the other misses, so their detections are merged before tracking.
         with self._timer.stage("preprocess"):
             tensor, box = self._detector.preprocess(roi.crop(frame))
+            if focus is not None:
+                focus_tensor, focus_box = self._detector.preprocess(focus.crop(frame))
         with self._inference(), self._timer.stage("detect"):
             output = self._detector.infer(tensor)
+            if focus is not None:
+                focus_output = self._detector.infer(focus_tensor)
         with self._timer.stage("track"):
             detections = [d.shifted(roi.x1, roi.y1) for d in self._detector.postprocess(output, box, (roi.height, roi.width))]
+            if focus is not None:
+                detections = merge_detections(
+                    detections, self._in_focus(focus_output, focus_box, focus), self._config.detector.iou_threshold
+                )
+            if detections:
+                self._focus_active_until = captured_at + FOCUS_ACTIVE_S
             tracked = self._tracker.update(detections, captured_at)
 
         with self._timer.stage("select"):

@@ -40,6 +40,7 @@ let streamOk = false;
 let streamDropped = false;
 let eventsStored = null;
 let dialogCamera = null;
+let dialogPart = null; // enlarged part of the camera frame as fractions, null for the whole frame
 const dialogTarget = { img: cameraDialogImg, loading: false, objectUrl: null };
 
 const refreshService = initShell();
@@ -51,17 +52,28 @@ const resetZoom = wireZoom(
   document.getElementById('event-zoom-reset'),
 );
 eventDialog.addEventListener('close', resetZoom);
+const resetLiveZoom = wireLiveZoom(
+  document.getElementById('camera-frame'),
+  cameraDialogImg,
+  document.getElementById('camera-zoom-reset'),
+  (part) => {
+    dialogPart = part;
+    if (dialogCamera) loadSnapshot(dialogTarget, dialogCamera, 1280, dialogPart); // do not wait for the next tick
+  },
+);
 cameraDialog.addEventListener('close', () => {
   dialogCamera = null;
+  resetLiveZoom();
 });
 
 // -- pictures -------------------------------------------------------------------------------
 
-async function loadSnapshot(target, cameraId, width) {
+async function loadSnapshot(target, cameraId, width, part = null) {
   if (target.loading) return;
   target.loading = true;
   try {
-    const response = await fetch(`/cameras/${encodeURIComponent(cameraId)}/snapshot.jpg?width=${width}`, { cache: 'no-store' });
+    const crop = part ? `&crop=${part.map((value) => value.toFixed(4)).join(',')}` : '';
+    const response = await fetch(`/cameras/${encodeURIComponent(cameraId)}/snapshot.jpg?width=${width}${crop}`, { cache: 'no-store' });
     if (!response.ok) return;
     const url = URL.createObjectURL(await response.blob());
     const previous = target.objectUrl;
@@ -86,7 +98,7 @@ const observer = new IntersectionObserver((entries) => {
 setInterval(() => {
   if (document.hidden) return;
   if (dialogCamera) {
-    loadSnapshot(dialogTarget, dialogCamera, 1280);
+    loadSnapshot(dialogTarget, dialogCamera, 1280, dialogPart);
     return;
   }
   if (refreshMs === 0) return;
@@ -197,27 +209,18 @@ function openEvent(event) {
 // -- enlarging a picture --------------------------------------------------------------------
 
 /**
- * Lets the user drag a rectangle over the picture in `frame`; that part then fills the frame.
- * Dragging again enlarges further. A double click or `resetButton` shows the whole picture.
- * Returns the function that shows the whole picture.
+ * Lets the user drag a rectangle over `frame` with the mouse or a pen. `onSelect` gets the
+ * rectangle in frame pixels once the button is released. Returns the function that drops a
+ * drag in progress.
  */
-function wireZoom(frame, img, resetButton) {
+function wireDragBox(frame, onSelect) {
   const box = el('div', { class: 'zoom-box', hidden: true });
   frame.append(box);
-  // Where the picture sits: its top left corner in frame pixels, and how much it is enlarged.
-  let view = { scale: 1, x: 0, y: 0 };
   let start = null;
 
-  function show() {
-    img.style.transform = view.scale === 1 ? '' : `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
-    resetButton.hidden = view.scale === 1;
-  }
-
-  function reset() {
+  function cancel() {
     start = null;
     box.hidden = true;
-    view = { scale: 1, x: 0, y: 0 };
-    show();
   }
 
   function pointIn(event) {
@@ -252,9 +255,30 @@ function wireZoom(frame, img, resetButton) {
     const height = Math.abs(end.y - start.y);
     const left = Math.min(start.x, end.x);
     const top = Math.min(start.y, end.y);
-    start = null;
-    box.hidden = true;
+    cancel();
     if (width < ZOOM_MIN_DRAG_PX || height < ZOOM_MIN_DRAG_PX) return;
+    onSelect({ left, top, width, height });
+  });
+
+  frame.addEventListener('pointercancel', cancel);
+  return cancel;
+}
+
+/**
+ * Lets the user drag a rectangle over the picture in `frame`; that part then fills the frame.
+ * Dragging again enlarges further. A double click or `resetButton` shows the whole picture.
+ * Returns the function that shows the whole picture.
+ */
+function wireZoom(frame, img, resetButton) {
+  // Where the picture sits: its top left corner in frame pixels, and how much it is enlarged.
+  let view = { scale: 1, x: 0, y: 0 };
+
+  function show() {
+    img.style.transform = view.scale === 1 ? '' : `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+    resetButton.hidden = view.scale === 1;
+  }
+
+  const cancel = wireDragBox(frame, ({ left, top, width, height }) => {
     // Not clientWidth: that is rounded, and the rounding error grows with the enlargement.
     const { width: frameWidth, height: frameHeight } = frame.getBoundingClientRect();
     // The selection measured on the picture as it is without enlargement.
@@ -276,10 +300,65 @@ function wireZoom(frame, img, resetButton) {
     show();
   });
 
-  frame.addEventListener('pointercancel', () => {
-    start = null;
-    box.hidden = true;
+  function reset() {
+    cancel();
+    view = { scale: 1, x: 0, y: 0 };
+    show();
+  }
+
+  frame.addEventListener('dblclick', reset);
+  resetButton.addEventListener('click', reset);
+  return reset;
+}
+
+/**
+ * The same dragging for a live camera picture. Here the enlarged part is not the small
+ * picture stretched: `onChange` gets the part as fractions [x1, y1, x2, y2] of the camera
+ * frame (null for the whole frame), and the caller asks the service for that part, cut from
+ * the full-resolution frame. Returns the function that shows the whole frame.
+ */
+function wireLiveZoom(frame, img, resetButton, onChange) {
+  let part = null;
+
+  function set(next) {
+    part = next;
+    resetButton.hidden = part === null;
+    onChange(part);
+  }
+
+  const cancel = wireDragBox(frame, ({ left, top, width, height }) => {
+    // Where the picture really is inside the frame: `object-fit: contain` can leave bars.
+    const outer = frame.getBoundingClientRect();
+    const inner = img.getBoundingClientRect();
+    const ratio = img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : 16 / 9;
+    const shownWidth = Math.min(inner.width, inner.height * ratio);
+    const shownHeight = shownWidth / ratio;
+    const originX = inner.left - outer.left + (inner.width - shownWidth) / 2;
+    const originY = inner.top - outer.top + (inner.height - shownHeight) / 2;
+    const unit = (value) => Math.min(Math.max(value, 0), 1);
+    // The selection as fractions of what is shown now, then of the whole camera frame.
+    const [px1, py1, px2, py2] = part ?? [0, 0, 1, 1];
+    const x1 = px1 + unit((left - originX) / shownWidth) * (px2 - px1);
+    const x2 = px1 + unit((left + width - originX) / shownWidth) * (px2 - px1);
+    const y1 = py1 + unit((top - originY) / shownHeight) * (py2 - py1);
+    const y2 = py1 + unit((top + height - originY) / shownHeight) * (py2 - py1);
+    // Equal fractions of width and height keep the shape of the camera frame, so the part
+    // fills the picture without bars. Grown around the middle of the selection, kept inside.
+    const side = Math.max(x2 - x1, y2 - y1, 1 / ZOOM_MAX);
+    if (side >= 0.98) {
+      set(null);
+      return;
+    }
+    const startX = Math.min(Math.max((x1 + x2) / 2 - side / 2, 0), 1 - side);
+    const startY = Math.min(Math.max((y1 + y2) / 2 - side / 2, 0), 1 - side);
+    set([startX, startY, startX + side, startY + side]);
   });
+
+  function reset() {
+    cancel();
+    if (part !== null) set(null);
+  }
+
   frame.addEventListener('dblclick', reset);
   resetButton.addEventListener('click', reset);
   return reset;
@@ -406,7 +485,8 @@ function openCamera(card) {
   dialogCamera = card.id;
   document.getElementById('camera-dialog-title').textContent = card.description ? `${card.id} · ${card.description}` : card.id;
   document.getElementById('camera-dialog-note').textContent =
-    'Gambar diperbarui empat kali per detik selama jendela ini terbuka. Kotak hijau menandai plat yang terdeteksi.';
+    'Gambar diperbarui empat kali per detik selama jendela ini terbuka. Kotak hijau menandai plat yang terdeteksi. '
+    + 'Seret di gambar untuk memperbesar bagian itu; klik dua kali untuk kembali ke tampilan penuh.';
   cameraDialogImg.alt = `Gambar terbaru ${card.id}`;
   if (card.objectUrl) cameraDialogImg.src = card.img.src;
   cameraDialog.showModal();

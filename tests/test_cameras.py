@@ -13,7 +13,8 @@ from alpr_id.capture.reader import ReaderStatus
 from alpr_id.config import AppConfig, CameraConfig, StorageConfig
 from alpr_id.logging_setup import mask_url
 from alpr_id.pipeline import engine as engine_module
-from alpr_id.pipeline.engine import ConflictError, Engine, NotFoundError
+from alpr_id.pipeline.camera_pipeline import VisiblePlate
+from alpr_id.pipeline.engine import CameraView, ConflictError, Engine, NotFoundError
 from alpr_id.pipeline.events import PlateEvent
 from alpr_id.storage.cameras import CameraStore
 from alpr_id.storage.db import EventStore
@@ -296,6 +297,27 @@ def test_no_signal_picture_follows_the_requested_width(make_engine):
     for width in (640, 1280):
         image = cv2.imdecode(np.frombuffer(engine.video_jpeg("cam-1", width), dtype=np.uint8), cv2.IMREAD_COLOR)
         assert image.shape[:2] == (width * 9 // 16, width)
+
+
+def test_picture_of_a_part_of_the_frame_keeps_the_plate_box_on_the_plate():
+    frame = np.zeros((1440, 2560, 3), dtype=np.uint8)
+    plate = VisiblePlate(
+        track_id=1, box=(1200, 700, 1320, 740), plate=None, plate_formatted=None, raw=None, confidence=None,
+        format_valid=None, region_known=None, alternatives=(), reads=0, event_id=None, last_seen=engine_module.clock(),
+    )
+    view = CameraView(seq=1, frame=frame, visible=(plate,))
+
+    # The middle quarter of the frame is 1280 x 720 pixels, and is shown without shrinking.
+    part = Engine._render(view, 1280, (0.25, 0.25, 0.75, 0.75))
+    assert part.shape[:2] == (720, 1280)
+    green = np.argwhere(part[:, :, 1] == 255)
+    assert tuple(green.min(axis=0)) == (700 - 360 - 1, 1200 - 640 - 1)  # box line, 2 px thick, in crop pixels
+    assert not frame.any()  # drawn on a copy, the frame the pipeline keeps is untouched
+
+    # Asked for narrower than the part is: scaled down, the box with it.
+    small = Engine._render(view, 640, (0.25, 0.25, 0.75, 0.75))
+    assert small.shape[:2] == (360, 640)
+    assert small[:, :, 1].max() > 200
 
 
 # -- region codes in the engine ------------------------------------------------------------

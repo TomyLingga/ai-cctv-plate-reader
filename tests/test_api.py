@@ -76,10 +76,10 @@ class FakeEngine:
 
     # -- what the camera routes need ---------------------------------------------------
 
-    def video_jpeg(self, camera_id, width=None):
+    def video_jpeg(self, camera_id, width=None, crop=None):
         if camera_id != "cam-1":
             raise KeyError(camera_id)
-        self.jpeg_calls.append(width)
+        self.jpeg_calls.append(width if crop is None else (width, crop))
         return b"\xff\xd8jpeg"
 
     def add_camera(self, camera, url):

@@ -40,12 +40,32 @@ class CameraConfig(_Section):
     # the API, whose URL is kept in the database instead.
     url_env: str = ""
     roi: Roi = (0.0, 0.0, 1.0, 1.0)
+    # A second, small search area inside the frame, read on top of `roi`: the spot where
+    # vehicles stand. The detector shrinks `roi` to its input size, and a plate that ends up
+    # too small there is missed; the same plate in a crop the size of the detector input
+    # (640 x 640 pixels) is found. Neither view finds every plate, both together find more
+    # (docs/fase-2-baseline-dan-benchmark.md, section 3d). None = `roi` only.
+    focus: Roi | None = None
     process_fps: float = Field(default=8.0, gt=0)
 
     @field_validator("roi")
     @classmethod
     def _roi_inside_frame(cls, roi: Roi) -> Roi:
         return check_roi(roi)
+
+    @field_validator("focus")
+    @classmethod
+    def _focus_inside_frame(cls, focus: Roi | None) -> Roi | None:
+        return check_roi(focus) if focus is not None else None
+
+    @model_validator(mode="after")
+    def _focus_inside_roi(self) -> CameraConfig:
+        # A plate found outside `roi` would count as cut by the border and never be read.
+        if self.focus is not None:
+            (x1, y1, x2, y2), (fx1, fy1, fx2, fy2) = self.roi, self.focus
+            if not (x1 <= fx1 and y1 <= fy1 and fx2 <= x2 and fy2 <= y2):
+                raise ValueError("focus must lie inside roi")
+        return self
 
 
 class CaptureConfig(_Section):

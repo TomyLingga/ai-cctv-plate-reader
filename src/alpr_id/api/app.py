@@ -262,12 +262,26 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"unknown camera {camera_id}") from None
 
     @app.get("/cameras/{camera_id}/snapshot.jpg")
-    def snapshot(camera_id: str, width: int = Query(default=640, ge=160, le=1920)) -> Response:
-        """Latest processed frame with the plate boxes drawn. One JPEG per request."""
+    def snapshot(
+        camera_id: str,
+        width: int = Query(default=640, ge=160, le=1920),
+        crop: str | None = Query(default=None, max_length=64, description="x1,y1,x2,y2 as fractions of the frame"),
+    ) -> Response:
+        """Latest processed frame with the plate boxes drawn. One JPEG per request.
+
+        With `crop`, only that part of the frame, cut from the full-resolution picture.
+        """
         # Round to a few fixed widths: every distinct width is rendered and cached separately.
         width = max(round(width / SNAPSHOT_WIDTH_STEP), 1) * SNAPSHOT_WIDTH_STEP
+        area: Roi | None = None
+        if crop is not None:
+            try:
+                x1, y1, x2, y2 = (float(value) for value in crop.split(","))
+                area = check_roi((x1, y1, x2, y2))
+            except ValueError:
+                raise HTTPException(status_code=422, detail="crop must be x1,y1,x2,y2 as fractions with x1 < x2 and y1 < y2") from None
         try:
-            jpeg = engine.video_jpeg(camera_id, width)
+            jpeg = engine.video_jpeg(camera_id, width, area)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown camera {camera_id}") from None
         return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})

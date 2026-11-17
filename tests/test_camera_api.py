@@ -191,6 +191,15 @@ def test_snapshot_is_one_uncached_jpeg(tmp_path):
     assert client.get("/cameras/cam-9/video").status_code == 404
 
 
+def test_snapshot_of_a_part_of_the_frame(tmp_path):
+    client, engine = make_client(tmp_path)
+    response = client.get("/cameras/cam-1/snapshot.jpg", params={"width": 1280, "crop": "0.25,0.3,0.75,0.8"})
+    assert response.status_code == 200
+    assert engine.jpeg_calls == [(1280, (0.25, 0.3, 0.75, 0.8))]
+    for bad in ("0.5,0.3,0.25,0.8", "0,0,1", "0,0,1,1.5", "a,b,c,d", "nan,0,1,1"):
+        assert client.get("/cameras/cam-1/snapshot.jpg", params={"crop": bad}).status_code == 422, bad
+
+
 def test_browser_pages_are_served(tmp_path):
     client, _ = make_client(tmp_path)
     response = client.get("/", follow_redirects=False)

@@ -13,7 +13,8 @@ import numpy as np
 
 from alpr_id import __version__
 from alpr_id.capture.reader import RtspReader
-from alpr_id.config import AppConfig, CameraConfig, camera_url
+from alpr_id.capture.roi import roi_to_pixels
+from alpr_id.config import AppConfig, CameraConfig, Roi, camera_url
 from alpr_id.detect.onnx_detector import PlateDetector
 from alpr_id.detect.providers import create_session, resolve_providers
 from alpr_id.logging_setup import get_logger, mask_url
@@ -456,6 +457,7 @@ class Engine:
             "description": camera.description,
             "origin": worker.origin,
             "roi": list(camera.roi),
+            "focus": list(camera.focus) if camera.focus is not None else None,
             "process_fps": camera.process_fps,
             "connected": status.connected,
             "fps": status.fps,
@@ -529,15 +531,22 @@ class Engine:
         worker = self._worker_by_legacy(legacy_id)
         return worker.camera.id if worker else None
 
-    def video_jpeg(self, camera_id: str, width: int | None = None) -> bytes:
+    def video_jpeg(self, camera_id: str, width: int | None = None, crop: Roi | None = None) -> bytes:
         """Latest processed frame as JPEG, scaled down, with boxes and plate text drawn.
 
+        `crop` is a part of the frame as fractions [x1, y1, x2, y2]: that part is cut from the
+        full-resolution frame before scaling, so an enlarged view shows real detail.
         KeyError for an unknown camera.
         """
         worker = self._worker(camera_id)
         width = width or self.config.api.video_width
         view = worker.view
         fresh = view is not None and worker.reader.status().connected
+        if crop is not None:
+            # Not cached: every viewer picks its own part of the frame.
+            image = self._render(view, width, crop) if fresh else self._no_signal(width)
+            ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            return encoded.tobytes() if ok else b""
         seq = view.seq if fresh else -1
         key = (camera_id, width)
         with self._jpeg_lock:
@@ -552,16 +561,22 @@ class Engine:
         return data
 
     @staticmethod
-    def _render(view: CameraView, target_width: int) -> np.ndarray:
-        height, width = view.frame.shape[:2]
-        scale = min(target_width / width, 1.0)
-        image = cv2.resize(view.frame, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
+    def _render(view: CameraView, target_width: int, crop: Roi | None = None) -> np.ndarray:
+        frame, left, top = view.frame, 0, 0
+        if crop is not None:
+            part = roi_to_pixels(crop, frame.shape[1], frame.shape[0])
+            frame, left, top = part.crop(frame), part.x1, part.y1
+        height, width = frame.shape[:2]
+        scale = min(target_width / width, 1.0)  # never enlarged here: the browser does that
+        size = (max(int(width * scale), 1), max(int(height * scale), 1))
+        # Without scaling the crop is still a view into the frame, and drawing needs its own copy.
+        image = cv2.resize(frame, size, interpolation=cv2.INTER_AREA) if scale < 1.0 else frame.copy()
         now = clock()
         thickness = 2 if image.shape[1] >= 960 else 1
         for plate in view.visible:
             if now - plate.last_seen > 1.5:
                 continue
-            x1, y1, x2, y2 = (int(v * scale) for v in plate.box)
+            x1, y1, x2, y2 = (int((v - offset) * scale) for v, offset in zip(plate.box, (left, top, left, top), strict=True))
             cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), thickness)
             if plate.plate_formatted:
                 cv2.putText(image, plate.plate_formatted, (x1, max(y1 - 8, 18)), cv2.FONT_HERSHEY_SIMPLEX,

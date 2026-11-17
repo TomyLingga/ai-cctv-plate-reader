@@ -23,7 +23,7 @@
 #>
 param(
     [string]$User,
-    [string]$HostName = '100.119.227.41',          # Tailscale address of the inference PC
+    [string]$HostName = '100.90.220.87',           # Tailscale address of the inference PC
     [string]$RemoteDir = 'C:\alpr-id',
     [ValidateSet('gpu', 'cpu')][string]$Extra = 'gpu',
     [string]$KeyFile = "$env:USERPROFILE\.ssh\alpr_rog_ed25519",

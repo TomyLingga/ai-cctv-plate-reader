@@ -7,6 +7,10 @@ recording is processed at the camera's process_fps, as the live service does.
     uv run --frozen --extra cpu python scripts/compare_focus.py data/samples/rec-20261113-b/cam-4.mkv cam-4 --out out.json
 
 The camera's `focus` comes from config/app.yaml, or from --focus x1,y1,x2,y2.
+
+--detector FILE runs the same with another detector than the one in the config. That is how a
+candidate detector is tried on a recording before it is installed: tracking, waiting for the
+truck to stop, OCR and voting are the service's own.
 """
 from __future__ import annotations
 
@@ -69,10 +73,13 @@ def main() -> None:
     parser.add_argument("--max-seconds", type=float)
     parser.add_argument("--only", choices=("wide_only", "wide_and_focus"), help="run one of the two, to run them side by side")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--detector", type=Path, help="detector ONNX file to use instead of detector.model_path")
     args = parser.parse_args()
 
     configure_logging(log_dir=None, level="WARNING")
     config = load_config()
+    if args.detector:
+        config = config.model_copy(update={"detector": config.detector.model_copy(update={"model_path": args.detector})})
     camera = config.camera(args.camera_id)
     if camera is None:
         raise SystemExit(f"unknown camera {args.camera_id}")
@@ -81,7 +88,7 @@ def main() -> None:
         raise SystemExit("the camera has no focus area; give one with --focus")
     detector, ocr = load_models(config)
 
-    result = {"recording": str(args.recording), "camera": camera.id}
+    result = {"recording": str(args.recording), "camera": camera.id, "detector": str(config.detector.model_path)}
     for name, variant in (("wide_only", camera.model_copy(update={"focus": None})), ("wide_and_focus", camera.model_copy(update={"focus": focus}))):
         if args.only and name != args.only:
             continue

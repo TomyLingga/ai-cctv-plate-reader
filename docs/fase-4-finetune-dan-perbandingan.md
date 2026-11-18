@@ -9,8 +9,9 @@ Dikerjakan 15 November 2026 di laptop pengembangan (training) dan PC ROG (penguk
 | OCR | Model baru `models/ocr/finetuned/timbangan-20261115.onnx` dipasang di PC ROG pada 15 November 2026 pukul 09.47. Model awal tetap ada di sana untuk kembali. | Pada 280 crop berlabel manusia yang platnya belum pernah dilihat model: 244 terbaca benar, model awal 228. Salah baca dengan confidence 0,9 ke atas turun dari 25 menjadi 14. Per kendaraan 139 benar dari 154 (model awal 134), tidak ada kendaraan yang menjadi salah. |
 | Detektor | Tetap `models/detector/plat.onnx` (YOLOv8n) | YOLO26n hasil training menemukan 76 dari 81 plat pada frame kamera, detektor sekarang 80. YOLO26s terlalu lambat untuk GTX 1060. |
 | Kecepatan | Tidak ada yang diubah | Empat kamera sudah diproses 7,5 sampai 8 fps dari target 8. Model OCR baru sama cepatnya dengan yang lama. |
+| Detektor, 18 November 2026 | `models/detector/candidates/yolov8n-20261118b.onnx` (YOLOv8n yang sama, dilatih lanjut) dipasang di PC ROG pada 18 November 2026 pukul 15.59. `plat.onnx` tetap ada di sana untuk kembali. | Pada 443 plat di frame event 18 November: 437 berskor 0,5 ke atas, detektor sekarang 317. Tidak ada plat yang ditemukan detektor sekarang yang hilang. |
 
-Semua angka akurasi di dokumen ini dihitung pada crop berlabel manusia dari kamera timbangan. Jumlah platnya masih sedikit (54 plat, 154 kendaraan), jadi selisih di bawah kira-kira 5 crop tidak dianggap perbedaan.
+Semua angka akurasi di dokumen ini dihitung pada crop berlabel manusia dari kamera timbangan. Jumlah platnya masih sedikit (54 plat, 154 kendaraan), jadi selisih di bawah kira-kira 5 crop tidak dianggap perbedaan. Bagian detektor tidak memuat angka akurasi: kotak platnya diberi detektor dan OCR, bukan orang, jadi di sana yang dihitung hanya berapa plat berlabel yang ditemukan.
 
 ## OCR
 
@@ -173,6 +174,151 @@ Detektor tidak diganti. Di frame kamera YOLO26n lebih buruk, padahal labelnya pu
 YOLO26s tidak dilatih sampai selesai. Model bawaannya diekspor dan diukur dulu di PC ROG: 35,8 ms per frame. Empat kamera pada 8 fps berarti 32 frame per detik, atau 1,15 detik kerja detektor untuk tiap detik, jadi service harus melewati frame.
 
 Untuk menilai detektor dengan adil dibutuhkan frame kamera yang kotaknya digambar orang, termasuk plat yang terlewat detektor sekarang. Contoh yang paling berguna untuk training berikutnya sudah terlihat: plat putih dan lampu kuning.
+
+## Detektor, 18 November 2026: plat malam dan plat yang berdiri jauh
+
+Dikerjakan atas permintaan pengguna ("coba latih plat malam, tapi di laptop ku saja, nanti hasil modelnya di deploy ke RoG"). Latar belakangnya ada di [dokumen Fase 2 bagian 3d](fase-2-baseline-dan-benchmark.md): plat truk yang berdiri di timbangan hanya selebar kira-kira 100 piksel, dan setelah ROI diperkecil ke masukan detektor tinggal 38 piksel. Area fokus menolong, tetapi plat malam di balik bull bar (`BK 8391 LJ`) tetap di bawah skor 0,5 di semua pandangan.
+
+Yang dilatih kali ini YOLOv8n yang sama dengan yang dipakai service (`models/detector/src/best.pt`), bukan arsitektur baru. Kecepatannya di GTX 1060 karena itu tidak berubah.
+
+### Cara memberi label
+
+Frame kamera tetap tidak punya kotak buatan orang. `training/detector/build_dataset.py` memberi label seperti ini:
+
+- Detektor service melihat tiap frame dari semua pandangan: ROI yang diperkecil, area fokus, dan tiap petak 640 piksel dari ROI pada resolusi asli. Plat yang hilang di ROI yang diperkecil ditemukan di petak.
+- Detektor kedua, YOLOv9-t dari open-image-models (`models/detector/yolo-v9-t-640-license-plates-end2end.onnx`), melihat area fokus dan petak yang sama. Bila keduanya menemukan plat yang sama, kotak detektor service yang dipakai. Detektor kedua hanya menambah plat yang tidak terlihat detektor service.
+- Sebuah kotak dihitung plat bila OCR membaca plat berpola sah, berkode wilayah yang dikenal, minimal 6 karakter, dengan confidence minimal 0,8; atau bila service melaporkan plat yang memenuhi syarat yang sama di tempat itu pada frame itu.
+- Kotak yang tidak bisa dipastikan ditutup warna abu-abu di gambar latih: bukan plat, bukan juga latar.
+- Tiap frame menjadi dua gambar, yaitu dua pandangan yang diterima detektor service: ROI dan area fokus.
+
+Data uji `test_cctv` adalah semua frame event 18 November 2026 (00.00 sampai 12.07). Frame 14 sampai 17 November dan rekaman 13 November masuk train dan val. Truk yang sama datang tiap hari, jadi truk di data uji kebanyakan bukan truk baru.
+
+| Split | Gambar | Kotak plat | Isi |
+|---|---|---|---|
+| train | 2.283 | 3.016 | 800 foto Kaggle, 1.368 gambar dari frame event, 115 dari rekaman |
+| val | 321 | 400 | 100 foto Kaggle, 199 dari frame event, 22 dari rekaman |
+| test_cctv | 443 | 443 | frame event 18 November: 232 gambar ROI, 211 gambar area fokus; 146 di antaranya malam |
+| test_public | 100 | 197 | split test Kaggle |
+
+Angka di bagian ini bukan akurasi. Labelnya dari dua detektor dan OCR, jadi yang dihitung adalah berapa plat berlabel yang ditemukan sebuah model pada pandangan yang dipakai service. Plat yang tidak terlihat kedua detektor di pandangan mana pun tidak ada di label.
+
+### Putaran 1 dan tiga kesalahan labelnya
+
+Putaran pertama (`data/dataset/detector-20261118`, model `yolov8n-20261118.onnx`) memakai detektor service saja sebagai pemberi label, menerima semua event service sebagai bukti plat, dan menambahkan 486 gambar "latar kosong": key frame rekaman yang tidak memuat satu usulan pun. Hasilnya di 443 plat uji bagus (tabel di bawah), tetapi plat belakang truk tangki yang berdiri di cam-4 tidak diberi kotak sama sekali, juga pada ambang 0,05:
+
+| Frame cam-4, area fokus | Plat | Detektor sekarang | Putaran 1 | Putaran 2 |
+|---|---|---|---|---|
+| 08.35.55 | `BK8865XD` | 0,30 | tidak ada kotak | 0,89 |
+| 08.36.57 | `BK8865XD` | 0,71 | 0,86 | 0,88 |
+| 08.53.11 | `BK8768CA` | 0,57 | 0,79 | 0,88 |
+| 08.53.32 | `BK8768CA` | 0,41 | tidak ada kotak | 0,91 |
+| 09.34.57 | `BK8621XC` | 0,35 | 0,86 | 0,88 |
+| 09.37.22 | `BK8621XC` | 0,49 | 0,87 | 0,86 |
+
+Penyebabnya ditemukan dengan melihat gambarnya:
+
+1. **Gambar latar.** "Detektor tidak melihat apa-apa" bukan bukti frame itu kosong. Dari 60 gambar latar area fokus cam-4, sedikitnya 23 menampilkan truk tangki dari belakang dengan plat yang terlihat (sebagian tertutup pipa atau ban, sebagian kotor). Model diajari bahwa plat di posisi itu adalah latar. Gambar latar sekarang mati secara bawaan (`--backgrounds 0`).
+2. **Event sebagai bukti.** Service pernah melaporkan blok trotoar kuning sebagai plat (`E6G` 0,44 dan `E6611` 0,48 di cam-3 pada 18 November dini hari) dan tulisan rompi (`SECUR1TY` 0,87). Kotaknya ikut menjadi label. Sekarang event hanya menjadi bukti bila berpola sah, berkode wilayah yang dikenal, dan confidence minimal 0,8.
+3. **Plat separuh tertutup.** Teks seperti `D85HF`, `BM955`, dan `B33` adalah bagian plat yang masih terlihat di balik pipa atau ban. Plat tertutup tidak dipakai sebagai data latih (aturan pengguna 15 November 2026), jadi teks di bawah 6 karakter tidak lagi dihitung plat. Sembilan gambar dibuang dari dataset putaran 2 dengan aturan ini.
+
+Satu hal lain muncul saat membuat ulang dataset: di GPU laptop (RTX 5050, `CUDAExecutionProvider`) model OCR membaca teks yang salah dari 400 di antara 400 crop (`BK8695XT` menjadi `CKWA1CWJC1`), sedangkan kedua detektor memberi kotak yang sama dengan CPU. Guru label karena itu selalu menjalankan OCR di CPU. Di GTX 1060 PC ROG OCR membaca benar.
+
+### Putaran 2
+
+```powershell
+# lingkungan GPU: detektor di GPU, OCR tetap di CPU
+.venv-gpu\Scripts\python.exe training/detector/build_dataset.py --out data/dataset/detector-20261118b `
+    --public kaggle="../dataset/Indonesian License Plate Dataset" --test-from 2026-11-18T00:00 `
+    --events data/rog-20261118 --videos data/samples/rec-20261113-a data/samples/rec-20261113-b
+uv run --project training python training/detector/train.py train --model models/detector/src/best.pt `
+    --data data/dataset/detector-20261118b/data.yaml --name yolov8n-20261118b --epochs 80
+```
+
+Dataset selesai dalam 61 menit, training 80 epoch dalam 60 menit di RTX 5050. Hasil lewat kode service (`compare_runtime.py`, ambang confidence service 0,35; skor 0,5 ke atas adalah syarat tracker memulai jejak):
+
+| Model | Ditemukan dari 443 | Skor 0,5 ke atas | Terlewat | Kotak lebih |
+|---|---|---|---|---|
+| Detektor sekarang (`plat.onnx`) | 351 | 317 | 92 | 4 |
+| Putaran 1 | 429 | 427 | 14 | 6 |
+| Putaran 2 (`yolov8n-20261118b.onnx`) | 437 | 437 | 6 | 4 |
+
+Plat dengan skor 0,5 ke atas, per pandangan:
+
+| Pandangan | Plat | Sekarang | Putaran 1 | Putaran 2 |
+|---|---|---|---|---|
+| ROI, siang | 159 | 108 | 151 | 156 |
+| ROI, malam | 73 | 37 | 71 | 71 |
+| Area fokus, siang | 138 | 112 | 134 | 138 |
+| Area fokus, malam | 73 | 60 | 71 | 72 |
+
+Dan per lebar plat di frame kamera (plat yang lebih jauh lebih kecil):
+
+| Pandangan dan lebar plat | Plat | Sekarang | Putaran 1 | Putaran 2 |
+|---|---|---|---|---|
+| ROI, di bawah 90 piksel | 13 | 4 | 9 | 11 |
+| ROI, 90 sampai 105 | 74 | 41 | 72 | 73 |
+| ROI, 105 sampai 125 | 114 | 80 | 110 | 112 |
+| ROI, 125 ke atas | 31 | 20 | 31 | 31 |
+| Area fokus, di bawah 90 piksel | 13 | 8 | 11 | 12 |
+| Area fokus, 90 sampai 105 | 74 | 56 | 73 | 74 |
+| Area fokus, 105 sampai 125 | 114 | 104 | 112 | 114 |
+| Area fokus, 125 ke atas | 10 | 5 | 9 | 10 |
+
+`compare_runtime.py` juga membandingkan plat demi plat dengan model pertama. Putaran 1 kehilangan dua plat yang ditemukan detektor sekarang (satu turun dari 0,74 ke 0,47, satu tidak diberi kotak). Putaran 2 tidak kehilangan satu pun: 120 plat naik ke 0,5 ke atas, 0 turun.
+
+Enam plat yang terlewat putaran 2 juga terlewat detektor sekarang. Semuanya dilihat: dua kali tulisan `BG 7070 N` yang dicat di badan truk, dan empat plat di gambar ROI (satu setengah tertutup, satu rusak, satu gelap dengan orang di depannya, satu plat depan yang jelas). Empat kotak lebihnya: papan nama berlampu di truk (0,76), panel putih kosong di samping plat (0,58), deretan lampu di bull bar (0,52), dan satu plat asli yang di gambar uji ditutup abu-abu karena tidak ada yang memastikannya (0,66).
+
+Di foto Kaggle (197 plat) yang ditemukan naik dari 141 menjadi 191. Kotak lebihnya 15, detektor sekarang 2. Kelima belasnya dilihat: 11 plat asli yang tidak berlabel di dataset itu, 4 salah (lampu depan 0,36, deret baut bumper 0,62, tas bermotif 0,83, papan nama warung 0,50). Di split val 397 dari 400 plat berskor 0,5 ke atas (detektor sekarang 332).
+
+### Lewat jalur service
+
+`scripts/compare_focus.py --detector` menjalankan rekaman lewat pipeline service (tracking, tunggu berhenti, OCR, voting) dengan detektor lain. Dua potongan rekaman 13 November dicoba, keduanya dengan area fokus. Rekaman ini ikut menyumbang 137 gambar ke train dan val, jadi ini pemeriksaan bahwa calon bekerja di jalur service, bukan ukuran pada data baru.
+
+| Rekaman | Detektor | Frame dengan plat terlihat | Event |
+|---|---|---|---|
+| cam-3, 10 menit (plat depan) | sekarang | 4.519 dari 4.781 | `BK8985HF` 0,999 dan `BK8104GP` 0,999 |
+| cam-3, 10 menit (plat depan) | putaran 2 | 4.615 dari 4.781 | `BK8985HF` 0,999 dan `BK8104GP` 0,999 |
+| cam-4, 15 menit (truk tangki dari belakang) | sekarang | 56 dari 7.200 | tidak ada |
+| cam-4, 15 menit (truk tangki dari belakang) | putaran 2 | 1.140 dari 7.200 | `B985HF` 0,914 (saat lewat) dan `BG351DPP` 0,405 |
+
+Di cam-3 tidak ada yang berubah. Di cam-4 terlihat harga dari detektor yang lebih peka: ketiga truk di potongan itu platnya terhalang (pipa, ban cadangan, kotoran), dan plat yang dulu tidak ditemukan sekarang ditemukan lalu dibaca salah. `B985HF` adalah `BK8985HF` yang dua hurufnya tertutup pipa; truk yang sama terbaca benar dari depan di cam-3. Event bacaan salah dari plat terhalang akan lebih sering muncul di kamera yang melihat truk dari belakang. Service sekarang pun sudah menghasilkannya dari plat belakang (`K8768CA` 0,99 di cam-4 pada 18 November pukul 08.53).
+
+### Yang belum diukur
+
+- Seberapa sering event bacaan salah itu muncul dalam sehari, dan berapa event benar yang bertambah di malam hari. Tidak ada rekaman malam; ukurannya baru ada setelah calon berjalan di kamera sungguhan.
+- Apakah OCR membaca benar plat di bawah 90 piksel yang sekarang ditemukan.
+- Plat yang tidak terlihat kedua detektor pemberi label.
+- Tiga kotak salah di frame kamera berskor di atas 0,5, jadi tracker akan mengikutinya dan OCR akan mencoba membacanya. Detektor sekarang punya kelemahan yang sama terhadap tulisan (event `SATPAM`, `SECUR1TY`).
+
+### Pemasangan dan rekaman
+
+Pengguna meminta calon itu dipasang ("pasang sekarang") dan PC ROG merekam video untuk sementara, supaya bisa dilihat dari jarak berapa plat terbaca dan tidak.
+
+- Berkas disalin ke `C:\alpr-id\models\detector\candidates\yolov8n-20261118b.onnx` (SHA-256 sama dengan di laptop). Di GTX 1060, 200 kali jalan selagi service berjalan: median 17,3 ms dan p95 20,4 ms; `plat.onnx` 17,2 ms dan 20,3 ms.
+- `deploy\rog\set-detector-model.ps1` mengganti `detector.model_path` pada 15.59.02, saat tidak ada plat di depan kamera mana pun. Tiga puluh tiga detik kemudian: empat kamera tersambung, 8 fps diproses per kamera, kedua model di `CUDAExecutionProvider`. Tiga menit kemudian, dengan truk di depan tiga kamera: total per frame median 45 sampai 66 ms, 8 fps tetap tercapai, GPU 63%, VRAM 1.480 MiB.
+- Event pertama sesudahnya: `BK8286XG` (cam-1, 0,992), `BK8064FC` (cam-4, 0,996), dan truk yang sama dari belakang di cam-3 sebagai `K8064FC` (0,856).
+- Kembali ke detektor lama: `set-detector-model.ps1 -Model models/detector/plat.onnx` di PC ROG, dan baris yang sama di `config\app.yaml` laptop.
+
+Rekaman: `scripts/record_long.py` menyalin paket video keempat kamera tanpa encode ulang ke `C:\alpr-id\data\samples\rec-long-20261118\cam-<n>\`, satu berkas tiap 30 menit yang dinamai menurut jam server saat paket pertamanya. Mulai 18 November pukul 16.01, berhenti sendiri 19 November pukul 18.00 atau bila sisa disk C di bawah 150 GB (waktu mulai 385 GB). Uji 75 detik sebelumnya memberi 2 sampai 10 MB per 30 detik per kamera, jadi satu hari kira-kira 40 sampai 90 GB. Prosesnya berdiri sendiri, bukan task terjadwal: bila PC restart, rekaman tidak lanjut. Membuat berkas bernama `STOP` di folder itu menghentikannya lebih awal.
+
+Rekaman itu belum dianalisis. Rencananya: potongan di sekitar tiap event, dan di sekitar truk yang tidak menghasilkan event, dijalankan lewat `scripts/compare_focus.py`, lalu lebar plat saat pertama ditemukan dan saat pertama terbaca benar dicatat per kamera, siang dan malam.
+
+### Zoom digital seperti di ai_cctv
+
+Layanan lama memakai `ZOOM_FACTOR = 2.5`: bagian tengah frame, 1/2,5 lebar dan tingginya (1.024 × 576 piksel dari 2.560 × 1.440), dipotong dan hanya itu yang diberikan ke detektor. Pengguna meminta cara itu dicoba di laptop. `training/detector/compare_views.py` memberi detektor pandangan itu pada frame event 18 November yang sama dan menghitung plat berlabel yang mendapat kotak berskor 0,5 ke atas, untuk tiap gabungan pandangan:
+
+| Pandangan yang dipakai | Detektor terpasang, dari 232 plat | Detektor lama, dari 232 plat |
+|---|---|---|
+| ROI saja | 227 | 147 |
+| Area fokus saja | 210 | 175 |
+| Zoom 2,5 saja (cara ai_cctv) | 219 | 163 |
+| ROI dan area fokus (service sekarang) | 231 | 201 |
+| ROI dan zoom 2,5 | 231 | 184 |
+| ROI, area fokus, dan zoom 2,5 | 231 | 205 |
+
+Dengan detektor yang sekarang terpasang, zoom menemukan semua 219 plat yang ada di dalam potongannya, tetapi 13 plat lain berada di luar potongan itu. Sebagai pengganti ia kehilangan 12 plat dibanding cara sekarang, semuanya di siang hari; sebagai pandangan ketiga ia tidak menambah satu pun. Tidak ada kotak kuat yang hanya ditemukan pandangan zoom, jadi ia juga tidak memperlihatkan plat yang belum berlabel. Dengan detektor lama pandangan ketiga itu menambah 4 plat, dengan harga satu panggilan detektor lagi per frame (17 ms di GTX 1060).
+
+Zoom karena itu tidak dipasang. Dari 232 plat berlabel tinggal satu yang belum ditemukan, jadi yang masih bisa didapat adalah plat yang lebih jauh daripada semua yang berlabel, dan itu baru terlihat dari rekaman 18 sampai 19 November. Zoom juga tidak menolong OCR: crop plat selalu diambil dari frame asli lalu diubah ke ukuran masukan model OCR.
 
 ## Kecepatan di PC ROG
 

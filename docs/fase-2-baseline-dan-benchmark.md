@@ -128,6 +128,50 @@ Akibatnya versi 0.4.1 hanya membaca plat yang diam dan menolak teks tanpa angka.
 
 Plat yang sama muncul lebih dari sekali pada 48 plat. Sebagian besar adalah lintasan terpisah yang berjarak menit sampai jam (`BK 8486 WR` 20 kali sepanjang hari di tiga kamera). 26 event mengulang truk yang baru dilaporkan kamera pasangannya di timbangan yang sama, dan 14 mengulang truk di kamera yang sama.
 
+### 3d. Plat truk yang diam tidak terdeteksi, dan area fokus (17 November 2026)
+
+Kejadiannya di cam-4 pukul 16.45: truk `BK 8013 XJ` berdiri di timbangan, halaman pemantauan menulis "Tidak ada kendaraan", dan `/plate/4` kosong. Event-nya sendiri sudah keluar pukul 16.45.07 (dua bacaan, 99,6%) ketika plat masih selebar 127 piksel. Setelah truk berhenti di posisi akhirnya, plat tinggal selebar 106 piksel dan detektor tidak melihatnya lagi.
+
+Detektor menerima area baca (`roi`, 1792×936 piksel) yang diperkecil ke 640 piksel, jadi plat itu tinggal sekitar 38 piksel. Frame asli yang sama diuji dengan potongan persegi di sekitar titik berhenti, ambang detektor 0,05:
+
+| Potongan | Skala ke detektor | Skor plat |
+|---|---|---|
+| `roi` yang dipakai, 1792×936 | 0,36 | tidak ada kotak |
+| 1152×1152 | 0,56 | tidak ada kotak |
+| 1024×1024 | 0,62 | 0,30 |
+| 896×896 | 0,71 | tidak ada kotak |
+| 800×800 | 0,80 | 0,31 |
+| 720×720 | 0,89 | 0,56 |
+| 640×640 | 1,00 | 0,73 |
+
+Tracker baru memulai jejak dari skor 0,5, jadi potongannya harus sekitar 640 piksel.
+
+Potongan saja bukan pengganti area lebar. Pada 100 frame event kendaraan diam yang tersimpan (25 per kamera), plat yang terdeteksi dengan skor minimal 0,5:
+
+| Cara | Plat terdeteksi |
+|---|---|
+| Area lebar saja | 93 |
+| Potongan 640 saja | 89 |
+| Potongan 800 saja | 91 |
+| Potongan 960 saja | 87 |
+| Area lebar atau potongan 640 | 97 |
+
+Frame itu tersimpan karena area lebar pernah mendeteksi platnya, jadi angka 93 lebih bagus dari kenyataan; kasus seperti `BK 8013 XJ` tidak ada di dalamnya. Detektor ini tidak konsisten terhadap ukuran plat: `BK 8834 BF` di cam-3 mendapat 0,74 pada area lebar dan tidak terdeteksi pada potongan 640.
+
+Karena itu tiap kamera mendapat `focus`: potongan 640×640 piksel di sekitar titik tengah plat kendaraan diam (dari 395 event, potongan itu memuat 386), dicari sebagai tambahan atas `roi`, dan hasil keduanya digabung sebelum tracking. Satu panggilan detektor di GTX 1060 memakan median 15,4 ms saat service berjalan, dan dua panggilan per frame untuk empat kamera pada 8 fps akan memenuhi GPU yang juga dipakai service OCR surat. Maka potongan fokus hanya dicari tiap frame keempat selama tidak ada plat terlihat, dan di setiap frame sejak salah satu pencarian menemukan plat sampai 3 detik setelah deteksi terakhir.
+
+Uji pada 10 menit pertama rekaman cam-3 (`rec-20261113-b`, 4.781 frame diproses, `scripts/compare_focus.py`):
+
+| | Area lebar saja | Dengan fokus |
+|---|---|---|
+| Frame dengan plat terlihat | 4.262 | 4.519 |
+| Frame dengan plat yang layak dikirim `/plate/3` | 4.256 | 4.507 |
+| Event | `BK 8985 HF` | `BK 8985 HF`, `BK 8104 GP` |
+
+`BK 8104 GP` berdiri di timbangan dan terbaca 99,9% pada detik ke-569; dengan area lebar saja truk itu belum terbaca sampai menit ke-10. Rekaman 30 menit keempat kamera tidak selesai diuji: sembilan proses dijalankan bersamaan dan berebut CPU.
+
+Dipasang di PC ROG pukul 19.49. Sesudahnya keempat kamera diproses 8 fps, total per frame median 23 sampai 26 ms dan p95 46 sampai 53 ms saat timbangan kosong, GPU 31 sampai 62%. Yang belum diukur: beban dan hasil saat beberapa truk berdiri bersamaan di siang hari.
+
 ## 4. Latency
 
 Angka di bawah diukur di laptop pengembangan (i7-14700HX, RTX 5050), kecuali bagian "PC target" yang diukur di PC ROG setelah pemasangan.
